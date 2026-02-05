@@ -154,7 +154,7 @@ class Helper:
                 instance_details.append(detail)
 
             # Combine the summary and detailed messages for the current error label
-            error_label_summary = count_summary + "\n" + explanation + "\n".join(instance_details)
+            error_label_summary = count_summary + "\n" + explanation + "\n" + "\n".join(instance_details)
             label_report.append(error_label_summary)
 
         # Combine all the error messages into a single string

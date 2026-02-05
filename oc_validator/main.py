@@ -23,6 +23,7 @@ from oc_validator.csv_wellformedness import Wellformedness
 from oc_validator.id_syntax import IdSyntax
 from oc_validator.id_existence import IdExistence
 from oc_validator.semantics import Semantics
+from oc_validator.table_reader import read_metadata_row, read_citations_row
 from tqdm import tqdm
 from argparse import ArgumentParser
 
@@ -159,12 +160,16 @@ class Validator:
                                                   table=table))
                 row_ok = False
 
+            # Parse row into structured object
+            row_obj = read_metadata_row(row)
+
             for field, value in row.items():
 
                 if field == 'id':
-                    if value:
+                    # Use structured object's parsed id field
+                    items = row_obj.id
+                    if items:
                         br_ids_set = set()  # set where to put well-formed br IDs only
-                        items = value.split(' ')
 
                         for item_idx, item in enumerate(items):
 
@@ -264,13 +269,19 @@ class Validator:
                                                               valid=True))
 
                 if field == 'author' or field == 'editor':
-                    if value:
+                    # Use structured object's parsed field
+                    if field == 'author':
+                        agents = row_obj.author
+                    else:  # field == 'editor'
+                        agents = row_obj.editor
+                    
+                    if agents:
                         resp_agents = set()
-                        items = value.split('; ')
+                        items = agents  # Already parsed list of AgentItem objects
 
                         for item_idx, item in enumerate(items):
-
-                            if self.wellformed.orphan_ra_id(item):
+                            # Check orphan RA ID using the raw string
+                            if self.wellformed.orphan_ra_id(item._raw):
                                 message = messages['m10']
                                 table = {row_idx: {field: [item_idx]}}
                                 error_final_report.append(
@@ -282,7 +293,8 @@ class Validator:
                                                                   table=table,
                                                                   valid=True))
 
-                            if not self.wellformed.wellformedness_people_item(item):
+                            # Validate using the raw string
+                            if not self.wellformed.wellformedness_people_item(item._raw):
                                 message = messages['m9']
                                 table = {row_idx: {field: [item_idx]}}
                                 error_final_report.append(
@@ -294,10 +306,10 @@ class Validator:
                                                                   table=table))
 
                             else:
-                                if item not in resp_agents:
-                                    resp_agents.add(item)
+                                if item._raw not in resp_agents:
+                                    resp_agents.add(item._raw)
                                 else:  # in-field duplication of the same author/editor
-                                    table = {row_idx: {field: [i for i, v in enumerate(items) if v == item]}}
+                                    table = {row_idx: {field: [i for i, v in enumerate(items) if v._raw == item._raw]}}
                                     message = messages['m26']
 
                                     error_final_report.append(
@@ -309,8 +321,8 @@ class Validator:
                                                                       table=table)  # valid=False
                                     )
 
-                                ids = [m.group() for m in
-                                       finditer(r'((?:crossref|orcid|viaf|wikidata|ror|omid):\S+)(?=\s|\])', item)]
+                                # Use structured object's ids attribute
+                                ids = item.ids
 
                                 for id in ids:
                                     #  2nd validation level: EXTERNAL SYNTAX OF ID (RESPONSIBLE AGENT)
@@ -365,9 +377,12 @@ class Validator:
                                                               table=table))
 
                 if field == 'venue':
-                    if value:
+                    # Use structured object's parsed field
+                    venue = row_obj.venue
+                    if venue:
 
-                        if self.wellformed.orphan_venue_id(value):
+                        # Check orphan venue ID using the raw string
+                        if self.wellformed.orphan_venue_id(venue._raw):
                             message = messages['m15']
                             table = {row_idx: {field: [0]}}
                             error_final_report.append(
@@ -379,7 +394,8 @@ class Validator:
                                                               table=table,
                                                               valid=True))
 
-                        if not self.wellformed.wellformedness_venue(value):
+                        # Validate using the raw string
+                        if not self.wellformed.wellformedness_venue(venue._raw):
                             message = messages['m12']
                             table = {row_idx: {field: [0]}}
                             error_final_report.append(
@@ -391,8 +407,8 @@ class Validator:
                                                               table=table))
 
                         else:
-                            ids = [m.group() for m in
-                                   finditer(r'((?:doi|issn|isbn|url|wikidata|wikipedia|openalex|omid|jid|arxiv):\S+)(?=\s|\])', value)] # local: and temp: IDs should not be in venue
+                            # Use structured object's ids attribute
+                            ids = venue.ids
 
                             for id in ids:
 
@@ -502,11 +518,14 @@ class Validator:
                             type_ok = False
 
                 if field == 'publisher':
-                    if value:
+                    # Use structured object's parsed field
+                    publishers = row_obj.publisher
+                    if publishers:
                         resp_agents = set()
-                        items = value.split('; ')
+                        items = publishers  # Already parsed list of AgentItem objects
                         for item_idx, item in enumerate(items):
-                            if self.wellformed.orphan_ra_id(item):
+                            # Check orphan RA ID using the raw string
+                            if self.wellformed.orphan_ra_id(item._raw):
                                 message = messages['m10']
                                 table = {row_idx: {field: [item_idx]}}
                                 error_final_report.append(
@@ -518,7 +537,8 @@ class Validator:
                                                                   table=table,
                                                                   valid=True))
 
-                            if not self.wellformed.wellformedness_publisher_item(item):
+                            # Validate using the raw string
+                            if not self.wellformed.wellformedness_publisher_item(item._raw):
                                 message = messages['m9']
                                 table = {row_idx: {field: [item_idx]}}
                                 error_final_report.append(
@@ -529,10 +549,10 @@ class Validator:
                                                                   located_in='item',
                                                                   table=table))
                             else:
-                                if item not in resp_agents:
-                                    resp_agents.add(item)
+                                if item._raw not in resp_agents:
+                                    resp_agents.add(item._raw)
                                 else:  # in-field duplication of the same publisher
-                                    table = {row_idx: {field: [i for i, v in enumerate(items) if v == item]}}
+                                    table = {row_idx: {field: [i for i, v in enumerate(items) if v._raw == item._raw]}}
                                     message = messages['m26']
 
                                     error_final_report.append(
@@ -544,8 +564,8 @@ class Validator:
                                                                       table=table)  # valid=False
                                     )
 
-                                ids = [m.group() for m in
-                                       finditer(r'((?:crossref|orcid|viaf|wikidata|ror|omid):\S+)(?=\s|\])', item)]
+                                # Use structured object's ids attribute
+                                ids = item.ids
 
                                 for id in ids:
 
@@ -636,9 +656,18 @@ class Validator:
         id_fields_instances = []
 
         for row_idx, row in enumerate(tqdm(self.data)):
+            # Parse row into structured object
+            row_obj = read_citations_row(row)
+            
             for field, value in row.items():
                 if field == 'citing_id' or field == 'cited_id':
-                    if not value:  # Check required fields
+                    # Use structured object's parsed field
+                    if field == 'citing_id':
+                        items = row_obj.citing_id
+                    else:  # field == 'cited_id'
+                        items = row_obj.cited_id
+                    
+                    if not items:  # Check required fields
                         message = messages['m7']
                         table = {row_idx: {field: None}}
                         error_final_report.append(
@@ -650,7 +679,6 @@ class Validator:
                                                           table=table))
                     else:  # i.e. if string is not empty...
                         ids_set = set()  # set where to put valid IDs only
-                        items = value.split(' ')
 
                         for item_idx, item in enumerate(items):
 
@@ -810,8 +838,9 @@ class ClosureValidator:
 
         # Collect entities in META
         for row_idx, row in enumerate(self.meta_validator.data):
-            if row.get('id'):
-                ids:list = [i.strip() for i in row['id'].split()]
+            row_obj = read_metadata_row(row)
+            if row_obj.id:
+                ids = row_obj.id
                 meta_br_ids_groups.append(set(ids))
                 for item in set(ids):
                     if not ids_positions_meta.get(item):
@@ -821,16 +850,17 @@ class ClosureValidator:
 
         # Collect entities in CITS-CSV
         for row_idx, row in enumerate(self.cits_validator.data):
-            if row.get('citing_id'):
-                ids:list = [i.strip() for i in row['citing_id'].split()]
+            row_obj = read_citations_row(row)
+            if row_obj.citing_id:
+                ids = row_obj.citing_id
                 cits_br_ids_groups.append(set(ids))
                 for item in set(ids):
                     if not ids_positions_cits.get(item):
                         ids_positions_cits[item] = [{row_idx: {'citing_id': list(range(len(ids)))}}]
                     else:
                         ids_positions_cits[item].append({row_idx: {'citing_id': list(range(len(ids)))}})
-            if row.get('cited_id'):
-                ids:list = [i.strip() for i in row['cited_id'].split()]
+            if row_obj.cited_id:
+                ids = row_obj.cited_id
                 cits_br_ids_groups.append(set(ids))
                 for item in set(ids):
                     if not ids_positions_cits.get(item):
@@ -851,7 +881,7 @@ class ClosureValidator:
                 table = dict()
                 # Check if all of the IDs associated with the current BR are in meta_ids_missing_citations (using .issubset), 
                 # i.e., if none of the IDs for this BR is involved in a citation. If you want to write an error even when just one
-                # of the IDs is not involved in a citation, chech if br_ids_set.intersection(meta_ids_missing_citations) instead.
+                # of the IDs is not involved in a citation, check if br_ids_set.intersection(meta_ids_missing_citations) instead.
                 if br_ids_set.issubset(meta_ids_missing_citations):
                     # for i in br_ids_set.intersection(meta_ids_missing_citations):
                     for i in br_ids_set:
@@ -873,7 +903,7 @@ class ClosureValidator:
                 table = dict()
                 # Check if all of the IDs associated with the current BR are in cits_ids_missing_metadata (using .issubset), 
                 # i.e., if none of the IDs for this BR has available metadata. If you want to write an error even when just one
-                # of the IDs has no metadata, chech if br_ids_set.intersection(cits_ids_missing_metadata) instead.
+                # of the IDs has no metadata, check if br_ids_set.intersection(cits_ids_missing_metadata) instead.
                 if br_ids_set.issubset(cits_ids_missing_metadata):
                     # for i in br_ids_set.intersection(cits_ids_missing_metadata):
                     for i in br_ids_set:
