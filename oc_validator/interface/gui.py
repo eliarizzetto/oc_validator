@@ -98,7 +98,8 @@ def enrich_row(modeled_row:dict, error_obj:dict, err_id:str):
         for field_label, items_indexes in field_info.items():
             for item_idx in items_indexes:
                 data_item :dict= modeled_row['fields'][field_label][item_idx]
-                data_item['issues'].append(err_id)
+                if err_id not in data_item['issues']:  # avoid error duplicates
+                    data_item['issues'].append(err_id)
     
     modeled_row['contains_issue'] = True
     
