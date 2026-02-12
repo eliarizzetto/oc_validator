@@ -13,6 +13,7 @@
 # SOFTWARE.
 
 from collections import defaultdict
+from csv import field_size_limit, DictReader
 
 
 class UnionFind:
@@ -160,3 +161,15 @@ class Helper:
         # Combine all the error messages into a single string
         report = "\n\n".join(label_report)
         return report
+
+
+def read_csv(csv_fp):
+    field_size_limit(100000000)  # sets 100 MB as size limit for parsing larger csv fields
+    for delimiter in [',', ';', '\t']:
+        with open(csv_fp, newline='', encoding='utf-8') as f:
+            reader = DictReader(f, delimiter=delimiter)
+            rows = list(reader)
+            if rows and len(rows[0]) > 1:  # if each dict has more than 1 key, we assume it's read correctly
+                return rows
+    raise ValueError("Could not detect CSV delimiter")
+

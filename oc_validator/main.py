@@ -18,7 +18,7 @@ from json import load, dump
 from os.path import exists, join, dirname, abspath
 from os import makedirs, getcwd
 from re import finditer
-from oc_validator.helper import Helper
+from oc_validator.helper import Helper, read_csv
 from oc_validator.csv_wellformedness import Wellformedness
 from oc_validator.id_syntax import IdSyntax
 from oc_validator.id_existence import IdExistence
@@ -57,7 +57,7 @@ class TableNotMatchingInstance(ValidationError):
 class Validator:
     def __init__(self, csv_doc: str, output_dir: str, use_meta_endpoint=False, verify_id_existence=True):
         self.csv_doc = csv_doc
-        self.data = self.read_csv(self.csv_doc)
+        self.data = read_csv(self.csv_doc)
         self.table_to_process = self.process_selector(self.data)
         self.helper = Helper()
         self.wellformed = Wellformedness()
@@ -79,16 +79,6 @@ class Validator:
         self.visited_ids = dict()
         self.verify_id_existence = verify_id_existence
 
-    def read_csv(self, csv_doc, del_position=0):
-        field_size_limit(100000000)  # sets 100 MB as size limit for parsing larger csv fields
-        delimiters_to_try=[',',';','\t']
-        with open(csv_doc, 'r', encoding='utf-8') as f:
-            data_dict = list(DictReader(f, delimiter=delimiters_to_try[del_position]))
-            if len(data_dict[0].keys()) > 1:  # if each dict has more than 1 key, it means it's read correctly
-                return data_dict
-            else:
-                new_del_position = del_position+1
-                return self.read_csv(csv_doc, new_del_position)  # try with another delimiter
 
     def process_selector(self, data: list):
         process_type = None

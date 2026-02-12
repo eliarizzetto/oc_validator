@@ -1,270 +1,231 @@
-import csv
-import warnings
 from bs4 import BeautifulSoup, Tag
-from random import randint
+from oc_validator.table_reader import MetadataRow, CitationsRow, AgentItem, VenueInfo
+from typing import Union, List
+import colorsys
+import json
+from oc_validator.helper import read_csv
 from jinja2 import Environment, FileSystemLoader
-from json import load
-from os.path import realpath
-from os.path import join, dirname, abspath
-# from prettierfier import prettify_html
-# import webbrowser
+from os.path import dirname, abspath, realpath
+import random
+from os.path import join
 
+def generate_error_colors(n) -> set:
+    colors = set()
 
-def make_html_row(row_idx, row):
-    """
-    Converts a single row from the CSV table into an HTML table row with custom appropriate structure.
-    :param row_idx (int): the original index of the row to process, as it appears on the original table. Indexing is 1-based.
-    :param row (dict): the dictionary representing the row
-    :return (str): the HTML table row
-    """
+    while len(colors) < n:
+        h = random.random()
+        s = random.uniform(0.5, 0.9)
+        v = random.uniform(0.7, 0.95)
 
-    html_string_list = []
+        r, g, b = colorsys.hsv_to_rgb(h, s, v)
 
-    for col_name, value in row.items():
-        cell_html_string = ''
-
-        if value:
-            new_value = value
-
-            if col_name in ['id', 'citing_id', 'cited_id']:
-                items = value.split()
-                for idx, item in enumerate(items):
-                    s = f'<span class="item"><span class="item-component">{item}</span></span>'
-                    new_value = new_value.replace(item, s) if s not in new_value else new_value # to handle in-field duplicates
-                new_value = f'<span class="field-value {col_name}">{new_value}</span>'
-
-            elif col_name in ['author', 'editor', 'publisher']:
-                items = value.split('; ')
-
-                for idx, item in enumerate(items):
-                    if '[' in item and ']' in item:
-                        ids_start = item.index('[')+1
-                        ids_end = item.index(']')
-                        ids = item[ids_start:ids_end].split()
-                        name = item[:ids_start-1].strip()
-                        new_item = item
-
-                        for id in ids:
-                            new_item_component = f'<span class="item-component">{id}</span>'
-                            new_item = new_item.replace(id, new_item_component)
-                        new_item = new_item.replace(name, f'<span class="item-component">{name}</span>')
-                        s = f'<span class="item">{new_item}</span>'
-                        new_value = new_value.replace(item, s)
-                    else:
-                        s = f'<span class="item"><span class="item-component">{item}</span></span>'
-                        new_value = new_value.replace(item, s) if s not in new_value else new_value # to handle in-field duplicates
-
-                new_value = f'<span class="field-value {col_name}">{new_value}</span>'
-                
-            
-            elif col_name == 'venue':
-                if '[' in value and ']' in value:
-                    ids_start = value.index('[')+1
-                    ids_end = value.index(']')
-                    ids = value[ids_start:ids_end].split()
-                    name = value[:ids_start-1].strip()
-                    new_item = value
-
-                    for id in ids:
-                        new_item_component = f'<span class="item-component">{id}</span>'
-                        new_item = new_item.replace(id, new_item_component)
-                    new_item = new_item.replace(name, f'<span class="item-component">{name}</span>')
-                    new_value = f'<span class="field-value {col_name}"><span class="item">{new_item}</span></span>'
-
-                else:
-                    new_value = f'<span class="field-value {col_name}"><span class="item"><span class="item-component">{value}</span></span></span>'
-
-            else: # i.e. if col_name in ['type', 'issue', 'volume', 'page', 'pub_date', 'citing_publication_date', 'cited_publication_date']:
-                new_value = f'<span class="field-value {col_name}"><span class="item"><span class="item-component">{value}</span></span></span>'
-            
-            html_string_list.append(new_value)
-        else:
-            new_value = f'<span class="field-value {col_name}"><span class="item"><span class="item-component"></span></span></span>'
-            html_string_list.append(new_value)
-
-    row_no_cell = f'<td><span>{str(int(row_idx)+1)}</span></td>'
-    # add row index both as a column in the table and as ID of the HTML element corresponding to the row
-    res = f'<tr id="row{str(int(row_idx)+1)}">{row_no_cell}{"".join([f"<td>{cell_value}</td>" for cell_value in html_string_list])}</tr>'
-    return res
-
-def read_csv(csv_doc, del_position=0):
-        delimiters_to_try=[',',';','\t']
-        with open(csv_doc, 'r', encoding='utf-8') as f:
-            data_dict = list(csv.DictReader(f, delimiter=delimiters_to_try[del_position]))
-            if len(data_dict[0].keys()) > 1:  # if each dict has more than 1 key, it means it's read correctly
-                return data_dict
-            else:
-                new_del_position = del_position+1
-                return read_csv(csv_doc, new_del_position)  # try with another delimiter
-
-def make_html_table(csv_path, rows_to_select: set, all_rows=False):
-    """
-    Converts the CSV table into an HTML table.
-    :param csv_path: the file path to the CSV table data.
-    :param rows_to_select (set): Set containing the indexes (integers) of the rows to be represented in the output HTML table. Row indexing is 1-based.
-    :param all_rows: True if all the rows in the CSV table should be included in the output HTML table regardless of rows_to_select parameter, False otherwise. Defaults to False.
-    :return (str): HTML string of the table (without validation information).
-    """
-
-    data = read_csv(csv_path)
-    colnames = data[0].keys()
-
-    row_no_col = '<th>row no.</th>'
-    thead = f'<thead><tr>{row_no_col}{"".join([f"<th>{cn}</th>" for cn in colnames])}</tr></thead>'
-
-    html_rows = []
-
-    if not all_rows:
-        for row_idx, row in enumerate(data):
-            if row_idx in rows_to_select:
-                html_rows.append(make_html_row(row_idx, row))
-
-    else:  # all rows must be made html, ragardless of the content of rows_to_select
-        if rows_to_select:
-            warnings.warn('The output HTML table will include all the rows. To include only invalid rows, set all_rows to False.', UserWarning)
-        for row_idx, row in enumerate(data):
-            html_rows.append(make_html_row(row_idx, row))
-
-    table:str = '<table id="table-data">' + thead + "\n".join(html_rows) + '</table>'
-
-    return table
-
-
-def add_err_info(htmldoc:str, json_filepath):
-    """
-    Adds validation information from the JSON validation report to the HTML table.
-    :param htmldoc: the HTML table or the whole HTML document, as a string
-    :param json_filepath: the filepath to the JSON validation report.
-    :return: the HTML string enriched with validation information
-    """
-
-    with open(json_filepath, 'r', encoding='utf8') as jsonfile:
-        report = load(jsonfile)
-        data = BeautifulSoup(htmldoc, 'html.parser')
-
-        for erridx, err in enumerate(report):
-            color = "#{:06x}".format(randint(0, 0xFFFFFF))  # generates random hexadecimal color
-            table = err['position']['table']
-            for rowidx, fieldobj in table.items():
-                htmlrow = data.find(id=f'row{str(int(rowidx)+1)}')
-                for fieldkey, fieldvalue in fieldobj.items():
-                    htmlfield = htmlrow.find(class_=fieldkey)
-                    if fieldvalue is not None:
-                        all_children_items = htmlfield.find_all(class_='item')
-                        for itemidx in fieldvalue:
-                            item: Tag = all_children_items[itemidx]
-                            item['class'].append(f'err-idx-{erridx}')
-                            item['class'].append('invalid-data')
-                            item['class'].append('error') if err['error_type'] == 'error' else item['class'].append('warning')
-                            square = data.new_tag('span', **{'class':'error'}) if err['error_type'] == 'error' else data.new_tag('span', **{'class':'warning'})# TODO: add if condition for warnings, assigning the class according to the error_type in the report
-                            square['style'] = f'background-color: {color}'
-                            square['class'].append('error-icon')
-                            square['class'].append(f'err-idx-{erridx}')
-                            square['title'] = err['message']
-                            square['onclick'] = 'highlightInvolvedElements(this)'
-                            item.insert_after(square)  # inserts span element representing the error metadata
-
-                    else:
-                        errorpart = htmlfield
-                        errorpart['class'].append(f'err-idx-{erridx}')
-                        errorpart['class'].append('invalid-data')
-                        errorpart['class'].append('error') if err['error_type'] == 'error' else errorpart['class'].append('warning')
-                        square = data.new_tag('span', **{'class':'error'}) if err['error_type'] == 'error' else data.new_tag('span', **{'class':'warning'})
-                        square['style'] = f'background-color: {color}'
-                        square['class'].append('error-icon')
-                        square['class'].append(f'err-idx-{erridx}')
-                        square['title'] = err['message']
-                        square['onclick'] = 'highlightInvolvedElements(this)'
-                        errorpart.insert_after(square)  # inserts span element representing the error metadata
-
-        result = str(data)
-        return result
-
-def make_gui(csv_path, report_path, output_html_path):
-    """
-    Generates an HTML document that visually represents the errors in the CSV table.
-    :param csv_path: the file path to the CSV table data.
-    :param report_path: the file path to the JSON validation report.
-    :param output_html_path: the file path to the output HTML document.
-    """
-
-    # Prepare the Jinja2 environment
-    # env = Environment(loader=FileSystemLoader('.'))
-    env = Environment(loader=FileSystemLoader(dirname(abspath(__file__))))
-
-    with open(report_path, 'r', encoding='utf-8') as f:
-        report:list = load(f)
-
-    if not len(report):  # -> the table validates, no errors!
-        print('The submitted data is valid and there are no errors to represent.')
-        template = env.get_template('valid_template.html')
-        html_output = template.render()
-        with open(output_html_path, "w", encoding='utf-8') as file:
-            file.write(html_output)
-        html_doc_fp = file.name
-        print(f"HTML document generated successfully at {realpath(html_doc_fp)}.")
-        # webbrowser.open('file://' + realpath(html_doc_fp))  # automatically opens created html page on default browser
-        return None
-
-    error_count = len(report)
-
-    # set Jinja template to the one for invalid data representation
-    template = env.get_template('invalid-template.html')
-
-    # get set containing the indexes of invalid rows
-    invalid_rows = set()
-    invalid_rows.update({int(idx) for d in report for idx in d['position']['table'].keys()})
-
-    # create HTML table containing the invalid rows
-    raw_html_table: str = make_html_table(csv_path, invalid_rows, all_rows=False)
-
-    # add error information to the HTML table
-    final_html_table = add_err_info(raw_html_table, report_path)
-
-    # read CSS and JS files to integrate them into HTML document 
-    with (
-        open(join(dirname(abspath(__file__)), 'style.css'), 'r', encoding='utf-8') as cssf, 
-        open(join(dirname(abspath(__file__)), 'script.js'), 'r', encoding='utf-8') as jsf
-        ):
-        stylesheet = cssf.read()
-        script = jsf.read()
-
-    # Render the template with the table
-    html_output = template.render(
-        table=final_html_table,
-        error_count=error_count,
-        stylesheet=stylesheet,
-        script=script
+        hex_color = '#{:02x}{:02x}{:02x}'.format(
+            int(r * 255), int(g * 255), int(b * 255)
         )
 
-    # Save the resulting HTML document to a file
-    with open(output_html_path, "w", encoding='utf-8') as file:
+        colors.add(hex_color)
+
+    return colors
+
+
+def model_row_default(row:Union[MetadataRow, CitationsRow], row_idx: int) -> dict:
+    """
+    Models a row of the input table as a dictionary with a structure suitable 
+    for enrichment with error information and rendering in the HTML template. 
+    Each field value is broken down into items, and each item is associated with 
+    an empty list of associated issues that can be populated later.
+
+    The resulting dictionary has the following structure: ::
+
+        {
+            "contains_issue": False,  # will be updated to True if any error is associated
+            "row_idx": 4,  # index of the row in the original table
+            "fields": {
+                "id": [
+                    {
+                        "raw": "doi:10.4242/x",  # original value of the whole item (without separators)
+                        "item_id": "4-id-0",  # unique identifier for the item
+                        "issues": []  # error IDs that affect this item (default empty list)
+                    },
+                    ...
+                ],
+                "title": [...],
+                ...
+            }
+        }
+    
+    :param row: the original row to be modelled
+    :type row: Union[MetadataRow, CitationsRow]
+    :param row_idx: 0-based index of the row in the original table, used to create unique item IDs and for error mapping
+    :type row_idx: int
+    :return: a dictionary representing the modelled row, ready for enrichment with error information and rendering in the HTML template
+    :rtype: dict
+    """
+
+    default_model = {
+        "contains_issue": False, 
+        "row_idx": row_idx,
+        "fields": {}  # <field label>:[dict]
+    }
+
+    for field_label, items_in_field in row.flat_serialise().items():
+        field_value_model = []
+        for item_idx, item in enumerate(items_in_field):
+
+            field_value_model.append({
+                "raw": item, 
+                "item_id": f"{row_idx}-{field_label}-{item_idx}",
+                "issues": []
+            })
+        default_model['fields'][field_label] = field_value_model
+
+    return default_model
+
+
+def enrich_row(modeled_row:dict, error_obj:dict, err_id:str):
+    """
+        Enriches the modelled row with the error information, by adding the error ID to the 'issues' list of each item involved in the error.
+    
+    :param modeled_row: the dictionary representing the modelled row to be enriched with error information
+    :type modeled_row: dict
+    :param error_obj: the error object (as taken from the validation report) containing information about the error to be associated with one or more pieces of data in the table
+    :type error_obj: dict
+    :param err_id: the unique identifier of the error
+    :type err_id: str
+    """
+
+    for row_idx, field_info in error_obj['position']['table'].items():
+        for field_label, items_indexes in field_info.items():
+            for item_idx in items_indexes:
+                data_item :dict= modeled_row['fields'][field_label][item_idx]
+                data_item['issues'].append(err_id)
+    
+    modeled_row['contains_issue'] = True
+    
+    return modeled_row
+
+
+def map_errors_to_data(data:List[Union[MetadataRow, CitationsRow]], report:list):
+    """
+    Maps the errors in the validation report to the corresponding pieces of data 
+    in the original table, by enriching the modelled data with error information.
+
+    :param data: the original table data, as a list of MetadataRow or CitationsRow objects
+    :type data: List[Union[MetadataRow, CitationsRow]]
+    :param report: the validation report, as a list of error objects (dictionaries) 
+    :type report: list
+    :return: a tuple containing the enriched rows (as a list of dictionaries) and the mapped errors (as a dictionary of error information)
+    :rtype: Tuple[List[dict], dict]
+    """
+
+    out_data = [model_row_default(row, idx) for idx, row in enumerate(data)]
+
+    table_type:str = 'cits' if isinstance(data[0], CitationsRow) else 'meta'
+
+    del data  # free memory
+
+    colors = generate_error_colors(len(report))
+
+    out_errors = {}
+    
+    for err_idx, error_obj in enumerate(report):
+        err_id = f"{table_type}-{err_idx}"  # e.g. meta-0, cits-1
+
+        # store error info
+        out_errors[err_id] = {
+            "message": error_obj['message'],
+            "label": error_obj['error_label'],  # can be used for grouping and filtering in HTML
+            "level": error_obj['error_type'],  # error|warning
+            "color": colors.pop()
+        }
+
+        # enrich data with error info
+        invalid_rows_indexes :dict = [int(k) for k in error_obj['position']['table'].keys()]
+        for i in invalid_rows_indexes:
+            out_data[i] = enrich_row(out_data[i], error_obj, err_id)
+        
+    return out_data, out_errors
+
+
+def make_gui(csv_fp:str, report_fp:str, out_fp:str):
+    """
+    Generates an HTML document that visualises the validation results, 
+    by mapping the errors in the validation report to the corresponding pieces 
+    of data in the original table and rendering the enriched data and error 
+    information in a user-friendly format.
+    
+    :param csv_fp: the file path of the original CSV data, used to model the data and map errors to it
+    :type csv_fp: str
+    :param report_fp: Description of the file path of the validation report, used to extract error information and map it to the data
+    :type report_fp: str
+    :param out_fp: the file path where the generated HTML document will be saved
+    :type out_fp: str
+    """
+
+    # separators for items according to the field,
+    # used in the template to reconstruct the whole field value 
+    # from the list of items
+    item_separators = {
+        'citing_id': ' ',
+        'cited_id': ' ',
+        'id': ' ',
+        'author': '; ',
+        'publisher': '; ',
+        'editor': '; '
+    }
+
+    current_dir = dirname(abspath(__file__))
+    env = Environment(
+        loader=FileSystemLoader(current_dir),
+        trim_blocks=True,
+        lstrip_blocks=True
+    )
+
+    with open(report_fp, 'r') as f:
+        report = json.load(f)
+    
+    with open(join(current_dir, 'script.js'), 'r') as script_file, open(join(current_dir, 'style.css'), 'r') as style_file:
+        script = script_file.read()
+        style = style_file.read()
+
+    if not report:
+        # template = env.get_template('valid_page.html')
+        # html_output = template.render()
+
+        with open(out_fp, "w", encoding='utf-8') as file, open('valid_page.html', 'r') as valid_page:
+            file.write(valid_page.read())
+
+        print("No errors found: valid HTML generated.")
+        return
+    
+    raw_data = read_csv(csv_fp) # as read with csv.DictReader, i.e. list of dicts
+    
+    table_type = 'meta' if len(list(raw_data[0].keys())) > 4 else 'cits'
+    parser = MetadataRow if table_type == 'meta' else CitationsRow
+
+    structured_data = [parser(row) for row in raw_data]
+
+    del raw_data  # free memory
+
+    mapped_data, mapped_errors = map_errors_to_data(structured_data, report)
+
+    template = env.get_template('invalid_template.j2')
+    
+    html_output = template.render(
+        error_count=len(mapped_errors),
+        data=mapped_data,
+        errors=mapped_errors,
+        item_separators=item_separators,
+        script=script,
+        style=style
+    )
+
+    with open(out_fp, "w", encoding='utf-8') as file:
         file.write(html_output)
-        html_doc_fp = file.name
 
-    # webbrowser.open('file://' + realpath(html_doc_fp))  # Open the HTML file in the default web browser
-    print(f"HTML document generated successfully at {realpath(html_doc_fp)}.")
+    print(f"HTML document generated successfully at {realpath(out_fp)}.")
 
-
-def transpose_report(error_report:dict):
-    """
-    NOT USED!!!
-    Reads the errorreport dictionary and creates a new dictionary where keys
-    correspond to the indexes of the rows that are intereseted by an error,
-    and values are the full objects representing those errors.
-    """
-    out_data = dict()
-    for err_obj in error_report:
-        rows = err_obj['position']['table'].keys()
-        for row in rows:
-            if row not in out_data:
-                out_data[row] = [err_obj]
-            else:
-                out_data[row].append(err_obj)
-    res = {int(key): value for key, value in sorted(out_data.items(), key=lambda item: int(item[0]))}
-
-    return res
-
+    return None
 
 def merge_html_files(doc1_fp, doc2_fp, merged_out_fp):
     """

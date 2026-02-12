@@ -27,8 +27,22 @@ class AgentItem:
         else:
             self.name = raw.strip()
     
+    def to_dict(self) -> Dict:
+        """
+        Serialize AgentItem to dictionary.
+        
+        :return: Dictionary representation of the agent item
+        """
+        return {
+            "name": self.name,
+            "ids": self.ids
+        }
+    
     def __repr__(self):
         return f"AgentItem(name='{self.name}', ids={self.ids})"
+    
+    def __str__(self):
+        return self._raw
 
 
 class VenueInfo:
@@ -56,8 +70,22 @@ class VenueInfo:
         else:
             self.name = raw.strip()
     
+    def to_dict(self) -> Dict:
+        """
+        Serialize VenueInfo to dictionary.
+        
+        :return: Dictionary representation of the venue info
+        """
+        return {
+            "name": self.name,
+            "ids": self.ids
+        }
+    
     def __repr__(self):
         return f"VenueInfo(name='{self.name}', ids={self.ids})"
+
+    def __str__(self):
+        return self._raw
 
 
 class MetadataRow:
@@ -97,6 +125,28 @@ class MetadataRow:
             return None
         return VenueInfo(value)
     
+    
+    def flat_serialise(self) -> Dict:
+
+        """
+        Serialise MetadataRow to dictionary with ALL fields represented as lists of items (strings).
+        """
+        result = {
+            "id": self.id,
+            "title": [self.title] if self.title is not None else [],
+            "author": [str(agent) for agent in self.author] if self.author is not None else [],
+            "pub_date": [self.pub_date] if self.pub_date is not None else [],
+            "venue": [str(self.venue)] if self.venue is not None else [],
+            "volume": [ self.volume] if self.volume is not None else [],
+            "issue": [self.issue] if self.issue is not None else [],
+            "page": [self.page] if self.page is not None else [],
+            "type": [self.type] if self.type is not None else [],
+            "publisher": [str(agent) for agent in self.publisher] if self.publisher is not None else [],
+            "editor": [str(agent) for agent in self.editor] if self.editor is not None else []
+        }
+
+        return result
+
     def __repr__(self):
         return f"MetadataRow(id={self.id}, title={self.title})"
 
@@ -117,6 +167,19 @@ class CitationsRow:
         if not value:
             return []
         return value.split(' ')
+    
+    def flat_serialise(self) -> Dict:
+        """
+        Serialise CitationsRow to dictionary with ALL fields represented as lists of items (strings).
+        """
+        result = {
+            "citing_id": self.citing_id,
+            "citing_publication_date": [self.citing_publication_date] if self.citing_publication_date is not None else [],
+            "cited_id": self.cited_id,
+            "cited_publication_date": [self.cited_publication_date] if self.cited_publication_date is not None else []
+        }
+
+        return result
     
     def __repr__(self):
         return f"CitationsRow(citing_id={self.citing_id}, cited_id={self.cited_id})"

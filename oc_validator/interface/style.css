@@ -1,42 +1,44 @@
-        .counter-par {
-            text-align: center;
-            font-size: larger;
-        }
-        .error-counter {
-            font-size: larger;
-        }
-        table {
-            margin: 1em 1em 1em 1em;
-            border: 1px solid black;
-        }
-        th {
-            font-style: italic;
-        }
-        td, th {
-            border: 1px solid black; padding: 0.3em;
-        }
-        .error-icon {
-            display: inline-block;
-            width: 0.8em;
-            height: 0.8em;
-            margin-right: 0.1em;
-            margin-left: 0.1em;
-        }
-        .highlight.error span {
-            background-color: lightcoral;
-        }
-        .highlight.warning span {
-            background-color: orange;
-        }
-        .invalid-data.error {
-            display: inline-block;
-            text-decoration: underline;
-            text-decoration-color: LightCoral;
-            text-decoration-thickness: 0.1em;
-        }
-        .invalid-data.warning {
-            display: inline-block;
-            text-decoration: underline;
-            text-decoration-color: Orange;
-            text-decoration-thickness: 0.1em;
-        }
+body {
+    padding: 20px;
+}
+
+table {
+    margin-top: 1em;
+}
+
+.issue-icon {
+    display: inline-block;
+    width: 0.8em;
+    height: 0.8em;
+    margin-left: 0.2em;
+    cursor: pointer;
+    border-radius: 2px;
+    vertical-align: middle;
+}
+
+
+span.item-data:has(~ span.issue-icon.error) {
+    text-decoration: underline;
+    text-decoration-color: LightCoral;
+}
+
+span.item-data:has(~ span.issue-icon.warning) {
+    text-decoration: underline;
+    text-decoration-color: Orange;
+}
+
+.popover {
+    max-width: 500px;
+}
+
+.highlight-error {
+    background-color: LightCoral;
+}
+
+.highlight-warning {
+    background-color: Orange;
+}
+
+.sep {
+    margin: 0 0.1em;
+}
