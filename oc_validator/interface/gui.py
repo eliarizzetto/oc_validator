@@ -70,13 +70,23 @@ def model_row_default(row:Union[MetadataRow, CitationsRow], row_idx: int) -> dic
 
     for field_label, items_in_field in row.flat_serialise().items():
         field_value_model = []
-        for item_idx, item in enumerate(items_in_field):
-
+        if not items_in_field:
+            # if the field is empty an empty list (None in the report),
+            #  we still want to represent it in the model, 
+            # with an empty item that can be associated with errors related to the whole field
             field_value_model.append({
-                "raw": item, 
-                "item_id": f"{row_idx}-{field_label}-{item_idx}",
+                "raw": "", 
+                "item_id": f"{row_idx}-{field_label}-empty",  # e.g. 4-id-empty
                 "issues": []
             })
+        else:
+            for item_idx, item in enumerate(items_in_field):
+
+                field_value_model.append({
+                    "raw": item, 
+                    "item_id": f"{row_idx}-{field_label}-{item_idx}",
+                    "issues": []
+                })
         default_model['fields'][field_label] = field_value_model
 
     return default_model
@@ -96,6 +106,11 @@ def enrich_row(modeled_row:dict, error_obj:dict, err_id:str):
 
     for row_idx, field_info in error_obj['position']['table'].items():
         for field_label, items_indexes in field_info.items():
+            if items_indexes is None:
+                # if None, the error is related to the whole field, 
+                # so we associate it with the first (and only) virtual empty item 
+                # representing the whole field value
+                items_indexes = [0]  
             for item_idx in items_indexes:
                 data_item :dict= modeled_row['fields'][field_label][item_idx]
                 if err_id not in data_item['issues']:  # avoid error duplicates
