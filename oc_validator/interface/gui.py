@@ -103,18 +103,21 @@ def enrich_row(modeled_row:dict, error_obj:dict, err_id:str):
     :param err_id: the unique identifier of the error
     :type err_id: str
     """
+    row_number : str = str(modeled_row['row_idx'])
+    for field_label, items_indexes in error_obj['position']['table'][row_number].items():
+        if items_indexes is None:
+            # if None, the error is related to the whole field, 
+            # so we associate it with the first (and only) virtual empty item 
+            # representing the whole field value
 
-    for row_idx, field_info in error_obj['position']['table'].items():
-        for field_label, items_indexes in field_info.items():
-            if items_indexes is None:
-                # if None, the error is related to the whole field, 
-                # so we associate it with the first (and only) virtual empty item 
-                # representing the whole field value
-                items_indexes = [0]  
-            for item_idx in items_indexes:
-                data_item :dict= modeled_row['fields'][field_label][item_idx]
-                if err_id not in data_item['issues']:  # avoid error duplicates
-                    data_item['issues'].append(err_id)
+            data_item :dict= modeled_row['fields'][field_label][0]
+            data_item['issues'].append(err_id)
+            break
+
+        for item_idx in items_indexes:
+            data_item :dict= modeled_row['fields'][field_label][item_idx]
+            if err_id not in data_item['issues']:  # avoid error duplicates
+                data_item['issues'].append(err_id)
     
     modeled_row['contains_issue'] = True
     
