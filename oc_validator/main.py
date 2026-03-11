@@ -18,7 +18,7 @@ from json import load, dump
 from os.path import exists, join, dirname, abspath
 from os import makedirs, getcwd
 from re import finditer
-from oc_validator.helper import Helper, read_csv
+from oc_validator.helper import Helper, read_csv, CSVStreamReader
 from oc_validator.csv_wellformedness import Wellformedness
 from oc_validator.id_syntax import IdSyntax
 from oc_validator.id_existence import IdExistence
@@ -57,8 +57,8 @@ class TableNotMatchingInstance(ValidationError):
 class Validator:
     def __init__(self, csv_doc: str, output_dir: str, use_meta_endpoint=False, verify_id_existence=True):
         self.csv_doc = csv_doc
-        self.data = read_csv(self.csv_doc)
-        self.table_to_process = self.process_selector(self.data)
+        self.csv_stream = CSVStreamReader(csv_doc)  # Use streaming instead of loading all data
+        self.table_to_process = self.process_selector()
         self.helper = Helper()
         self.wellformed = Wellformedness()
         self.syntax = IdSyntax()
@@ -80,17 +80,31 @@ class Validator:
         self.verify_id_existence = verify_id_existence
 
 
-    def process_selector(self, data: list):
+    def process_selector(self):
+        """
+        Detect the table type by streaming the first few rows.
+        This is memory-efficient as it doesn't load the entire file.
+        """
+        # Read first few rows to determine table type
+        sample_rows = []
+        for i, row in enumerate(self.csv_stream):
+            if i >= 10:  # Only need first 10 rows to determine type
+                break
+            sample_rows.append(row)
+        
+        if not sample_rows:
+            raise InvalidTableError(self.csv_doc)
+        
         process_type = None
         try:
             if all(set(row.keys()) == {"id", "title", "author", "pub_date", "venue", "volume", "issue", "page", "type",
-                                        "publisher", "editor"} for row in data):
+                                        "publisher", "editor"} for row in sample_rows):
                 process_type = 'meta_csv'
                 return process_type
-            elif all(set(row.keys()) == {'citing_id', 'citing_publication_date', 'cited_id', 'cited_publication_date'} for row in data):
+            elif all(set(row.keys()) == {'citing_id', 'citing_publication_date', 'cited_id', 'cited_publication_date'} for row in sample_rows):
                 process_type = 'cits_csv'
                 return process_type
-            elif all(set(row.keys()) == {'citing_id', 'cited_id'} for row in data): # support also Index tables with no publication dates
+            elif all(set(row.keys()) == {'citing_id', 'cited_id'} for row in sample_rows): # support also Index tables with no publication dates
                 process_type = 'cits_csv'
                 return process_type
             else:
@@ -119,6 +133,16 @@ class Validator:
         elif self.table_to_process == 'cits_csv':
             return self.validate_cits()
 
+    def _collect_meta_duplicate_data(self):
+        """
+        First pass: Collect minimal data needed for duplicate detection.
+        Returns: dict mapping row_idx to id field value
+        """
+        duplicate_data = {}
+        for row_idx, row in enumerate(tqdm(self.csv_stream.stream(), desc="First pass: Collecting IDs")):
+            duplicate_data[row_idx] = row.get('id', '')
+        return (duplicate_data, row_idx+1)
+    
     def validate_meta(self) -> list:
         """
         Validate an instance of META-CSV
@@ -130,8 +154,12 @@ class Validator:
         id_type_dict = self.id_type_dict
 
         br_id_groups = []
-
-        for row_idx, row in enumerate(tqdm(self.data)):
+        
+        # First pass: Collect data for duplicate detection
+        duplicate_data, rows_count = self._collect_meta_duplicate_data()
+        
+        # Second pass: Stream validation
+        for row_idx, row in enumerate(tqdm(self.csv_stream.stream(), desc="Second pass: Validating", total=rows_count)):
             row_ok = True  # switch for row well-formedness
             id_ok = True  # switch for id field well-formedness
             type_ok = True  # switch for type field well-formedness
@@ -616,7 +644,7 @@ class Validator:
         br_entities = self.helper.group_ids(br_id_groups)
 
         # GET DUPLICATE BIBLIOGRAPHIC ENTITIES (returns the list of error reports)
-        duplicate_report = self.wellformed.get_duplicates_meta(entities=br_entities, data_dict=self.data,
+        duplicate_report = self.wellformed.get_duplicates_meta(entities=br_entities, data_dict=duplicate_data,
                                                                messages=messages)
 
         if duplicate_report:
@@ -633,6 +661,16 @@ class Validator:
 
         return error_final_report
 
+    def _collect_cits_duplicate_data(self):
+        """
+        First pass: Collect minimal data needed for duplicate detection in CITS-CSV.
+        Returns: dict mapping row_idx to tuple of (citing_id, cited_id) values
+        """
+        duplicate_data = {}
+        for row_idx, row in enumerate(tqdm(self.csv_stream.stream(), desc="First pass: Collecting IDs")):
+            duplicate_data[row_idx] = (row.get('citing_id', ''), row.get('cited_id', ''))
+        return (duplicate_data, row_idx+1)
+
     def validate_cits(self) -> list:
         """
         Validates an instance of CITS-CSV.
@@ -644,8 +682,12 @@ class Validator:
         messages = self.messages
 
         id_fields_instances = []
-
-        for row_idx, row in enumerate(tqdm(self.data)):
+        
+        # First pass: Collect data for duplicate detection
+        duplicate_data, rows_count = self._collect_cits_duplicate_data()
+        
+        # Second pass: Stream validation
+        for row_idx, row in enumerate(tqdm(self.csv_stream.stream(), desc="Second pass: Validating", total=rows_count)):
             # Parse row into structured object
             row_obj = read_citations_row(row)
             
@@ -767,7 +809,7 @@ class Validator:
         entities = self.helper.group_ids(id_fields_instances)
         # GET SELF-CITATIONS AND DUPLICATE CITATIONS (returns the list of error reports)
         duplicate_report = self.wellformed.get_duplicates_cits(entities=entities,
-                                                               data_dict=self.data,
+                                                               data_dict=duplicate_data,
                                                                messages=messages)
         if duplicate_report:
             error_final_report.extend(duplicate_report)
@@ -827,7 +869,7 @@ class ClosureValidator:
         cits_json_report = []
 
         # Collect entities in META
-        for row_idx, row in enumerate(self.meta_validator.data):
+        for row_idx, row in enumerate(self.meta_validator.csv_stream.stream()):
             row_obj = read_metadata_row(row)
             if row_obj.id:
                 ids = row_obj.id
@@ -839,7 +881,7 @@ class ClosureValidator:
                         ids_positions_meta[item].append({row_idx: {'id': list(range(len(ids)))}})
 
         # Collect entities in CITS-CSV
-        for row_idx, row in enumerate(self.cits_validator.data):
+        for row_idx, row in enumerate(self.cits_validator.csv_stream.stream()):
             row_obj = read_citations_row(row)
             if row_obj.citing_id:
                 ids = row_obj.citing_id

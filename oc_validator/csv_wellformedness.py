@@ -394,7 +394,11 @@ class Wellformedness:
     #                                               table=table))
     #     return report
 
-    def get_duplicates_cits(self, entities: list, data_dict: list, messages) -> list: 
+    def get_duplicates_cits(self, entities: list, data_dict: dict, messages) -> list: 
+        """
+        Find duplicate citations and self-citations in CITS-CSV.
+        data_dict is a dict mapping row_idx to tuple of (citing_id, cited_id) values
+        """
         # Build a fast lookup map: ID -> entity index
         id_to_entity_index = {}
         for idx, entity_set in enumerate(entities):
@@ -404,9 +408,9 @@ class Wellformedness:
         citation_map = {}  # key: (citing_idx, cited_idx), value: table of row indices
         report = []
 
-        for row_idx, row in enumerate(data_dict):
-            citing_items = row['citing_id'].split(' ')
-            cited_items = row['cited_id'].split(' ')
+        for row_idx, (citing_id, cited_id) in data_dict.items():
+            citing_items = citing_id.split(' ')
+            cited_items = cited_id.split(' ')
 
             # Find first mapped citing entity
             citing_idx = next((id_to_entity_index.get(item) for item in citing_items if item in id_to_entity_index), None)
@@ -509,7 +513,11 @@ class Wellformedness:
 
     #     return report
 
-    def get_duplicates_meta(self, entities: list, data_dict: list, messages) -> list:
+    def get_duplicates_meta(self, entities: list, data_dict: dict, messages) -> list:
+        """
+        Find duplicate bibliographic entities in META-CSV.
+        data_dict is a dict mapping row_idx to 'id' field value (string)
+        """
         # Build ID → entity index lookup
         id_to_entity_index = {}
         for idx, entity_set in enumerate(entities):
@@ -520,8 +528,8 @@ class Wellformedness:
         meta_map = {}
         report = []
 
-        for row_idx, row in enumerate(data_dict):
-            items = row['id'].split(' ')
+        for row_idx, id_value in data_dict.items():
+            items = id_value.split(' ')
 
             # Find first valid ID that maps to an entity
             meta_id = next((id_to_entity_index.get(item) for item in items if item in id_to_entity_index), None)

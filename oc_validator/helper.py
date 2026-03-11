@@ -163,7 +163,60 @@ class Helper:
         return report
 
 
+class CSVStreamReader:
+    """
+    A streamable CSV reader that yields rows one at a time, allowing for memory-efficient
+    processing of large CSV files. Supports multiple passes by reopening the file.
+    """
+    def __init__(self, csv_fp):
+        self.csv_fp = csv_fp
+        self._delimiter = None
+        self._fieldnames = None
+        self._detect_delimiter_and_fieldnames()
+    
+    def _detect_delimiter_and_fieldnames(self):
+        """Detect the CSV delimiter and fieldnames from the first few rows."""
+        field_size_limit(100000000)  # sets 100 MB as size limit for parsing larger csv fields
+        for delimiter in [',', ';', '\t']:
+            with open(self.csv_fp, newline='', encoding='utf-8') as f:
+                reader = DictReader(f, delimiter=delimiter)
+                # Read first row to check if delimiter is correct
+                try:
+                    first_row = next(reader)
+                    if first_row and len(first_row) > 1:  # if dict has more than 1 key, we assume it's read correctly
+                        self._delimiter = delimiter
+                        self._fieldnames = reader.fieldnames
+                        return
+                except StopIteration:
+                    continue  # Empty file, try next delimiter
+        raise ValueError("Could not detect CSV delimiter")
+    
+    def stream(self):
+        """
+        Stream rows from the CSV file one at a time.
+        Yields dictionaries representing each row.
+        
+        This is a generator that can be used in for loops.
+        """
+        field_size_limit(100000000)
+        with open(self.csv_fp, newline='', encoding='utf-8') as f:
+            reader = DictReader(f, delimiter=self._delimiter)  # if fieldnames is specified, DictReader interprets the first row as data, not header!
+            for row in reader:
+                yield row
+    
+    def __iter__(self):
+        """Make the CSVStreamReader directly iterable."""
+        return self.stream()
+
+
 def read_csv(csv_fp):
+    """
+    Legacy function kept for backward compatibility.
+    For new code, use CSVStreamReader for memory-efficient streaming.
+    
+    Note: This function loads the entire file into memory and should not be
+    used for large files. Consider using CSVStreamReader instead.
+    """
     field_size_limit(100000000)  # sets 100 MB as size limit for parsing larger csv fields
     for delimiter in [',', ';', '\t']:
         with open(csv_fp, newline='', encoding='utf-8') as f:

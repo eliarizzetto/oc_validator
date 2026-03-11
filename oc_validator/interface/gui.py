@@ -3,7 +3,7 @@ from oc_validator.table_reader import MetadataRow, CitationsRow, AgentItem, Venu
 from typing import Union, List
 import colorsys
 import json
-from oc_validator.helper import read_csv
+from oc_validator.helper import CSVStreamReader
 from jinja2 import Environment, FileSystemLoader
 from os.path import dirname, abspath, realpath
 import random
@@ -217,14 +217,20 @@ def make_gui(csv_fp:str, report_fp:str, out_fp:str):
         print("No errors found: valid HTML generated.")
         return
     
-    raw_data = read_csv(csv_fp) # as read with csv.DictReader, i.e. list of dicts
+    # Use streaming to read CSV file efficiently
+    csv_stream = CSVStreamReader(csv_fp)
     
-    table_type = 'meta' if len(list(raw_data[0].keys())) > 4 else 'cits'
+    # Read first row to determine table type
+    first_row = None
+    for row in csv_stream:
+        first_row = row
+        break
+    
+    table_type = 'meta' if len(list(first_row.keys())) > 4 else 'cits'
     parser = MetadataRow if table_type == 'meta' else CitationsRow
 
-    structured_data = [parser(row) for row in raw_data]
-
-    del raw_data  # free memory
+    # Stream and parse all rows
+    structured_data = [parser(row) for row in csv_stream.stream()]
 
     mapped_data, mapped_errors = map_errors_to_data(structured_data, report)
 
