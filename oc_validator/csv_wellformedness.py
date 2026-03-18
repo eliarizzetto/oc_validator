@@ -17,6 +17,7 @@ from roman import fromRoman, InvalidRomanNumeralError
 from oc_validator.helper import Helper
 from json import load
 from os.path import join, dirname, abspath
+from typing import Generator
 
 
 class Wellformedness:
@@ -394,7 +395,7 @@ class Wellformedness:
     #                                               table=table))
     #     return report
 
-    def get_duplicates_cits(self, entities: list, data_dict: dict, messages) -> list: 
+    def get_duplicates_cits(self, entities: list, data_dict: dict, messages) -> Generator: 
         """
         Find duplicate citations and self-citations in CITS-CSV.
         data_dict is a dict mapping row_idx to tuple of (citing_id, cited_id) values
@@ -406,7 +407,6 @@ class Wellformedness:
                 id_to_entity_index[id_] = idx
 
         citation_map = {}  # key: (citing_idx, cited_idx), value: table of row indices
-        report = []
 
         for row_idx, (citing_id, cited_id) in data_dict.items():
             citing_items = citing_id.split(' ')
@@ -428,17 +428,16 @@ class Wellformedness:
                     }
                 }
                 message = messages['m4']
-                report.append(
-                    self.helper.create_error_dict(
-                        validation_level='csv_wellformedness',
-                        error_type='warning',
-                        message=message,
-                        error_label='self-citation',
-                        located_in='field',
-                        table=table,
-                        valid=True
-                    )
-                )
+                error = self.helper.create_error_dict(
+                            validation_level='csv_wellformedness',
+                            error_type='warning',
+                            message=message,
+                            error_label='self-citation',
+                            located_in='field',
+                            table=table,
+                            valid=True
+                        )
+                yield error
 
             # Track citations
             key = (citing_idx, cited_idx)
@@ -453,18 +452,15 @@ class Wellformedness:
         for citation, table in citation_map.items():
             if len(table) > 1:
                 message = messages['m5']
-                report.append(
-                    self.helper.create_error_dict(
-                        validation_level='csv_wellformedness',
-                        error_type='error',
-                        message=message,
-                        error_label='duplicate_citation',
-                        located_in='row',
-                        table=table
-                    )
-                )
-
-        return report
+                error = self.helper.create_error_dict(
+                            validation_level='csv_wellformedness',
+                            error_type='error',
+                            message=message,
+                            error_label='duplicate_citation',
+                            located_in='row',
+                            table=table
+                        )
+                yield error
 
     # # THIS FUNCTION IS THE OLD FUNCTION TO GET DUPLICATES, KEPT HERE FOR REFERENCE.
     # def get_duplicates_meta(self, entities: list, data_dict: list, messages) -> list:
@@ -513,7 +509,7 @@ class Wellformedness:
 
     #     return report
 
-    def get_duplicates_meta(self, entities: list, data_dict: dict, messages) -> list:
+    def get_duplicates_meta(self, entities: list, data_dict: dict, messages) -> Generator:
         """
         Find duplicate bibliographic entities in META-CSV.
         data_dict is a dict mapping row_idx to 'id' field value (string)
@@ -526,7 +522,6 @@ class Wellformedness:
 
         # Track meta_id → table
         meta_map = {}
-        report = []
 
         for row_idx, id_value in data_dict.items():
             items = id_value.split(' ')
@@ -549,15 +544,12 @@ class Wellformedness:
         for meta_id, table in meta_map.items():
             if len(table) > 1:
                 message = messages['m11']
-                report.append(
-                    self.helper.create_error_dict(
-                        validation_level='csv_wellformedness',
-                        error_type='error',
-                        message=message,
-                        error_label='duplicate_br',
-                        located_in='row',
-                        table=table
-                    )
-                )
-
-        return report
+                error = self.helper.create_error_dict(
+                            validation_level='csv_wellformedness',
+                            error_type='error',
+                            message=message,
+                            error_label='duplicate_br',
+                            located_in='row',
+                            table=table
+                        )
+                yield error

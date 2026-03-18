@@ -24,7 +24,7 @@ python -m oc_validator.main -i <input csv file path> -o <output dir path> [-m] [
 ### Required Parameters
 
 - `-i`, `--input`: The path to the CSV file to validate.
-- `-o`, `--output`: The path to the directory where the output JSON file and .txt file will be stored.
+- `-o`, `--output`: The path to the directory where the output JSON-Lines file and .txt file will be stored.
 
 ### Optional Parameters
 
@@ -55,7 +55,7 @@ python -m oc_validator.main -i path/to/input.csv -o path/to/output_dir -s
 
 An object of the `Validator` class is instantiated, passing as parameters the path to the input document to validate and the path to the directory where to store the output. By calling the `validate()` method on the instance of `Validator`, the validation process gets executed.
 
-The process automatically detects which of the two tables has been passed as input (on condition that the input CSV document's header is formatted correctly for at least one of them). During the process, the *whole* document is always processed: if the document is invalid or contains anomalies, the errors/warnings are reported in detail in a JSON file and summarized in a .txt file, which will be automatically created in the output directory. `validate` also returns a list of dictionaries corresponding to the JSON validation report (empty if the document is valid).
+The process automatically detects which of the two tables has been passed as input (on condition that the input CSV document's header is formatted correctly for at least one of them). During the process, the *whole* document is always processed: if the document is invalid or contains anomalies, the errors/warnings are reported in detail in a JSON-Lines file and summarized in a .txt file, which will be automatically created in the output directory.
 
 ```python
 from oc_validator.main import Validator

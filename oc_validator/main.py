@@ -14,11 +14,11 @@
 
 from csv import DictReader, field_size_limit
 from yaml import full_load
-from json import load, dump
+from json import load, dumps
 from os.path import exists, join, dirname, abspath
 from os import makedirs, getcwd
 from re import finditer
-from oc_validator.helper import Helper, read_csv, CSVStreamReader
+from oc_validator.helper import Helper, read_csv, CSVStreamReader, JSONLStreamIO
 from oc_validator.csv_wellformedness import Wellformedness
 from oc_validator.id_syntax import IdSyntax
 from oc_validator.id_existence import IdExistence
@@ -26,6 +26,7 @@ from oc_validator.semantics import Semantics
 from oc_validator.table_reader import read_metadata_row, read_citations_row
 from tqdm import tqdm
 from argparse import ArgumentParser
+import logging
 
 
 # --- Custom Exception classes. ---
@@ -71,14 +72,13 @@ class Validator:
         if not exists(self.output_dir):
             makedirs(self.output_dir)
         if self.table_to_process == 'meta_csv':
-            self.output_fp_json = self._make_output_filepath('out_validate_meta', 'json')
+            self.output_fp_json = self._make_output_filepath('out_validate_meta', 'jsonl')
             self.output_fp_txt = self._make_output_filepath('meta_validation_summary', 'txt')
         elif self.table_to_process == 'cits_csv':
-            self.output_fp_json = self._make_output_filepath('out_validate_cits', 'json')
+            self.output_fp_json = self._make_output_filepath('out_validate_cits', 'jsonl')
             self.output_fp_txt = self._make_output_filepath('cits_validation_summary', 'txt')
         self.visited_ids = dict()
         self.verify_id_existence = verify_id_existence
-
 
     def process_selector(self):
         """
@@ -127,7 +127,7 @@ class Validator:
         
         return full_path
 
-    def validate(self):
+    def validate(self) -> bool:
         if self.table_to_process == 'meta_csv':
             return self.validate_meta()
         elif self.table_to_process == 'cits_csv':
@@ -143,523 +143,520 @@ class Validator:
             duplicate_data[row_idx] = row.get('id', '')
         return (duplicate_data, row_idx+1)
     
-    def validate_meta(self) -> list:
+    def validate_meta(self) -> bool:
         """
-        Validate an instance of META-CSV
+        Validate an instance of META-CSV using JSON-Lines streaming output
         :return: the list of errors, i.e. the report of the validation process
         """
-        error_final_report = []
-
         messages = self.messages
         id_type_dict = self.id_type_dict
 
         br_id_groups = []
         
-        # First pass: Collect data for duplicate detection
-        duplicate_data, rows_count = self._collect_meta_duplicate_data()
-        
-        # Second pass: Stream validation
-        for row_idx, row in enumerate(tqdm(self.csv_stream.stream(), desc="Second pass: Validating", total=rows_count)):
-            row_ok = True  # switch for row well-formedness
-            id_ok = True  # switch for id field well-formedness
-            type_ok = True  # switch for type field well-formedness
+        # Open JSON-L file for streaming output
+        with JSONLStreamIO(self.output_fp_json, 'a') as jsonl_file:
+            # First pass: Collect data for duplicate detection
+            duplicate_data, rows_count = self._collect_meta_duplicate_data()
+            
+            # Second pass: Stream validation
+            for row_idx, row in enumerate(tqdm(self.csv_stream.stream(), desc="Second pass: Validating", total=rows_count)):
+                row_ok = True  # switch for row well-formedness
+                id_ok = True  # switch for id field well-formedness
+                type_ok = True  # switch for type field well-formedness
 
-            missing_required_fields = self.wellformed.get_missing_values(
-                row)  # dict w/ positions of error in row; empty if row is fine
-            if missing_required_fields:
-                message = messages['m17']
-                table = {row_idx: missing_required_fields}
-                error_final_report.append(
-                    self.helper.create_error_dict(validation_level='csv_wellformedness',
-                                                  error_type='error',
-                                                  message=message,
-                                                  error_label='required_fields',
-                                                  located_in='field',
-                                                  table=table))
-                row_ok = False
+                missing_required_fields = self.wellformed.get_missing_values(
+                    row)  # dict w/ positions of error in row; empty if row is fine
+                if missing_required_fields:
+                    message = messages['m17']
+                    table = {row_idx: missing_required_fields}
+                    error = self.helper.create_error_dict(
+                                validation_level='csv_wellformedness',
+                                error_type='error',
+                                message=message,
+                                error_label='required_fields',
+                                located_in='field',
+                                table=table)
+                    jsonl_file.write(error)
+                    row_ok = False
 
-            # Parse row into structured object
-            row_obj = read_metadata_row(row)
+                # Parse row into structured object
+                row_obj = read_metadata_row(row)
 
-            for field, value in row.items():
+                for field, value in row.items():
 
-                if field == 'id':
-                    # Use structured object's parsed id field
-                    items = row_obj.id
-                    if items:
-                        br_ids_set = set()  # set where to put well-formed br IDs only
+                    if field == 'id':
+                        # Use structured object's parsed id field
+                        items = row_obj.id
+                        if items:
+                            br_ids_set = set()  # set where to put well-formed br IDs only
 
-                        for item_idx, item in enumerate(items):
+                            for item_idx, item in enumerate(items):
 
-                            if item == '':
-                                message = messages['m1']
-                                table = {row_idx: {field: [item_idx]}}
-                                error_final_report.append(
-                                    self.helper.create_error_dict(validation_level='csv_wellformedness',
-                                                                  error_type='error',
-                                                                  message=message,
-                                                                  error_label='extra_space',
-                                                                  located_in='item',
-                                                                  table=table))
-
-                            elif not self.wellformed.wellformedness_br_id(item):
-                                message = messages['m2']
-                                table = {row_idx: {field: [item_idx]}}
-                                error_final_report.append(
-                                    self.helper.create_error_dict(validation_level='csv_wellformedness',
-                                                                  error_type='error',
-                                                                  message=message,
-                                                                  error_label='br_id_format',
-                                                                  located_in='item',
-                                                                  table=table))
-
-                            else:
-                                if item not in br_ids_set:
-                                    br_ids_set.add(item)
-                                else:  # in-field duplication of the same ID
-                                    table = {row_idx: {field: [i for i, v in enumerate(items) if v == item]}}
-                                    message = messages['m6']
-
-                                    error_final_report.append(
-                                        self.helper.create_error_dict(validation_level='csv_wellformedness',
-                                                                      error_type='error',
-                                                                      message=message,
-                                                                      error_label='duplicate_id',
-                                                                      located_in='item',
-                                                                      table=table)  # valid=False
-                                    )
-
-                                #  2nd validation level: EXTERNAL SYNTAX OF ID (BIBLIOGRAPHIC RESOURCE)
-                                if not self.syntax.check_id_syntax(item):
-                                    message = messages['m19']
+                                if item == '':
+                                    message = messages['m1']
                                     table = {row_idx: {field: [item_idx]}}
-                                    error_final_report.append(
-                                        self.helper.create_error_dict(validation_level='external_syntax',
-                                                                      error_type='error',
-                                                                      message=message,
-                                                                      error_label='br_id_syntax',
-                                                                      located_in='item',
-                                                                      table=table))
-                                #  3rd validation level: EXISTENCE OF ID (BIBLIOGRAPHIC RESOURCE)
-                                else:
-                                    if self.verify_id_existence: # if verify_id_existence is False just skip these operations
-                                        message = messages['m20']
-                                        table = {row_idx: {field: [item_idx]}}
-                                        if item not in self.visited_ids:
-                                            if not self.existence.check_id_existence(item):
-                                                error_final_report.append(
-                                                    self.helper.create_error_dict(validation_level='existence',
-                                                                                error_type='warning',
-                                                                                message=message,
-                                                                                error_label='br_id_existence',
-                                                                                located_in='item',
-                                                                                table=table, valid=True))
-                                                self.visited_ids[item] = False
-                                            else:
-                                                self.visited_ids[item] = True
-                                        elif self.visited_ids[item] is False:
-                                            error_final_report.append(
-                                                self.helper.create_error_dict(validation_level='existence',
-                                                                            error_type='warning',
-                                                                            message=message,
-                                                                            error_label='br_id_existence',
-                                                                            located_in='item',
-                                                                            table=table, valid=True))
-
-                        if len(br_ids_set) >= 1:
-                            br_id_groups.append(br_ids_set)
-
-                        if len(br_ids_set) != len(items):  # --> some well-formedness error occurred in the id field
-                            id_ok = False
-
-                if field == 'title':
-                    if value:
-                        if value.isupper():
-                            message = messages['m8']
-                            table = {row_idx: {field: [0]}}
-                            error_final_report.append(
-                                self.helper.create_error_dict(validation_level='csv_wellformedness',
-                                                              error_type='warning',
-                                                              message=message,
-                                                              error_label='uppercase_title',
-                                                              located_in='item',
-                                                              table=table,
-                                                              valid=True))
-
-                if field == 'author' or field == 'editor':
-                    # Use structured object's parsed field
-                    if field == 'author':
-                        agents = row_obj.author
-                    else:  # field == 'editor'
-                        agents = row_obj.editor
-                    
-                    if agents:
-                        resp_agents = set()
-                        items = agents  # Already parsed list of AgentItem objects
-
-                        for item_idx, item in enumerate(items):
-                            # Check orphan RA ID using the raw string
-                            if self.wellformed.orphan_ra_id(item._raw):
-                                message = messages['m10']
-                                table = {row_idx: {field: [item_idx]}}
-                                error_final_report.append(
-                                    self.helper.create_error_dict(validation_level='csv_wellformedness',
-                                                                  error_type='warning',
-                                                                  message=message,
-                                                                  error_label='orphan_ra_id',
-                                                                  located_in='item',
-                                                                  table=table,
-                                                                  valid=True))
-
-                            # Validate using the raw string
-                            if not self.wellformed.wellformedness_people_item(item._raw):
-                                message = messages['m9']
-                                table = {row_idx: {field: [item_idx]}}
-                                error_final_report.append(
-                                    self.helper.create_error_dict(validation_level='csv_wellformedness',
-                                                                  error_type='error',
-                                                                  message=message,
-                                                                  error_label='people_item_format',
-                                                                  located_in='item',
-                                                                  table=table))
-
-                            else:
-                                if item._raw not in resp_agents:
-                                    resp_agents.add(item._raw)
-                                else:  # in-field duplication of the same author/editor
-                                    table = {row_idx: {field: [i for i, v in enumerate(items) if v._raw == item._raw]}}
-                                    message = messages['m26']
-
-                                    error_final_report.append(
-                                        self.helper.create_error_dict(validation_level='csv_wellformedness',
-                                                                      error_type='error',
-                                                                      message=message,
-                                                                      error_label='duplicate_ra',
-                                                                      located_in='item',
-                                                                      table=table)  # valid=False
-                                    )
-
-                                # Use structured object's ids attribute
-                                ids = item.ids
-
-                                for id in ids:
-                                    #  2nd validation level: EXTERNAL SYNTAX OF ID (RESPONSIBLE AGENT)
-                                    if not self.syntax.check_id_syntax(id):
-                                        message = messages['m21']
-                                        table = {row_idx: {field: [item_idx]}}
-                                        error_final_report.append(
-                                            self.helper.create_error_dict(validation_level='external_syntax',
+                                    error = self.helper.create_error_dict(validation_level='csv_wellformedness',
                                                                           error_type='error',
                                                                           message=message,
-                                                                          error_label='ra_id_syntax',
+                                                                          error_label='extra_space',
                                                                           located_in='item',
-                                                                          table=table))
-                                    #  3rd validation level: EXISTENCE OF ID (RESPONSIBLE AGENT)
+                                                                          table=table)
+                                    jsonl_file.write(error)
+
+                                elif not self.wellformed.wellformedness_br_id(item):
+                                    message = messages['m2']
+                                    table = {row_idx: {field: [item_idx]}}
+                                    error = self.helper.create_error_dict(validation_level='csv_wellformedness',
+                                                                          error_type='error',
+                                                                          message=message,
+                                                                          error_label='br_id_format',
+                                                                          located_in='item',
+                                                                          table=table)
+                                    jsonl_file.write(error)
+
+                                else:
+                                    if item not in br_ids_set:
+                                        br_ids_set.add(item)
+                                    else:  # in-field duplication of the same ID
+                                        table = {row_idx: {field: [i for i, v in enumerate(items) if v == item]}}
+                                        message = messages['m6']
+
+                                        error = self.helper.create_error_dict(validation_level='csv_wellformedness',
+                                                                              error_type='error',
+                                                                              message=message,
+                                                                              error_label='duplicate_id',
+                                                                              located_in='item',
+                                                                              table=table)  # valid=False
+                                        jsonl_file.write(error)
+
+                                    #  2nd validation level: EXTERNAL SYNTAX OF ID (BIBLIOGRAPHIC RESOURCE)
+                                    if not self.syntax.check_id_syntax(item):
+                                        message = messages['m19']
+                                        table = {row_idx: {field: [item_idx]}}
+                                        error = self.helper.create_error_dict(validation_level='external_syntax',
+                                                                              error_type='error',
+                                                                              message=message,
+                                                                              error_label='br_id_syntax',
+                                                                              located_in='item',
+                                                                              table=table)
+                                        jsonl_file.write(error)
+                                    #  3rd validation level: EXISTENCE OF ID (BIBLIOGRAPHIC RESOURCE)
                                     else:
                                         if self.verify_id_existence: # if verify_id_existence is False just skip these operations
-                                            message = messages['m22']
+                                            message = messages['m20']
                                             table = {row_idx: {field: [item_idx]}}
-                                            if id not in self.visited_ids:
-                                                if not self.existence.check_id_existence(id):
-                                                    error_final_report.append(
-                                                        self.helper.create_error_dict(validation_level='existence',
+                                            if item not in self.visited_ids:
+                                                if not self.existence.check_id_existence(item):
+                                                    error = self.helper.create_error_dict(validation_level='existence',
                                                                                     error_type='warning',
                                                                                     message=message,
-                                                                                    error_label='ra_id_existence',
+                                                                                    error_label='br_id_existence',
                                                                                     located_in='item',
-                                                                                    table=table,
-                                                                                    valid=True))
-                                                    self.visited_ids[id] = False
+                                                                                    table=table, valid=True)
+                                                    jsonl_file.write(error)
+                                                    self.visited_ids[item] = False
                                                 else:
-                                                    self.visited_ids[id] = True
-                                            elif self.visited_ids[id] is False:
-                                                error_final_report.append(
-                                                    self.helper.create_error_dict(validation_level='existence',
-                                                                                error_type='warning',
-                                                                                message=message,
-                                                                                error_label='ra_id_existence',
-                                                                                located_in='item',
-                                                                                table=table,
-                                                                                valid=True))
-                if field == 'pub_date':
-                    if value:
-                        if not self.wellformed.wellformedness_date(value):
-                            message = messages['m3']
-                            table = {row_idx: {field: [0]}}
-                            error_final_report.append(
-                                self.helper.create_error_dict(validation_level='csv_wellformedness',
-                                                              error_type='error',
-                                                              message=message,
-                                                              error_label='date_format',
-                                                              located_in='item',
-                                                              table=table))
-
-                if field == 'venue':
-                    # Use structured object's parsed field
-                    venue = row_obj.venue
-                    if venue:
-
-                        # Check orphan venue ID using the raw string
-                        if self.wellformed.orphan_venue_id(venue._raw):
-                            message = messages['m15']
-                            table = {row_idx: {field: [0]}}
-                            error_final_report.append(
-                                self.helper.create_error_dict(validation_level='csv_wellformedness',
-                                                              error_type='warning',
-                                                              message=message,
-                                                              error_label='orphan_venue_id',
-                                                              located_in='item',
-                                                              table=table,
-                                                              valid=True))
-
-                        # Validate using the raw string
-                        if not self.wellformed.wellformedness_venue(venue._raw):
-                            message = messages['m12']
-                            table = {row_idx: {field: [0]}}
-                            error_final_report.append(
-                                self.helper.create_error_dict(validation_level='csv_wellformedness',
-                                                              error_type='error',
-                                                              message=message,
-                                                              error_label='venue_format',
-                                                              located_in='item',
-                                                              table=table))
-
-                        else:
-                            # Use structured object's ids attribute
-                            ids = venue.ids
-
-                            for id in ids:
-
-                                #  2nd validation level: EXTERNAL SYNTAX OF ID (BIBLIOGRAPHIC RESOURCE)
-                                if not self.syntax.check_id_syntax(id):
-                                    message = messages['m19']
-                                    table = {row_idx: {field: [0]}}
-                                    error_final_report.append(
-                                        self.helper.create_error_dict(validation_level='external_syntax',
-                                                                      error_type='error',
-                                                                      message=message,
-                                                                      error_label='br_id_syntax',
-                                                                      located_in='item',
-                                                                      table=table))
-                                #  3rd validation level: EXISTENCE OF ID (BIBLIOGRAPHIC RESOURCE)
-                                else:
-                                    if self.verify_id_existence: # if verify_id_existence is False just skip these operations
-                                        message = messages['m20']
-                                        table = {row_idx: {field: [0]}}
-                                        if id not in self.visited_ids:
-                                            if not self.existence.check_id_existence(id):
-                                                error_final_report.append(
-                                                    self.helper.create_error_dict(validation_level='existence',
+                                                    self.visited_ids[item] = True
+                                            elif self.visited_ids[item] is False:
+                                                error = self.helper.create_error_dict(validation_level='existence',
                                                                                 error_type='warning',
                                                                                 message=message,
                                                                                 error_label='br_id_existence',
                                                                                 located_in='item',
-                                                                                table=table,
-                                                                                valid=True))
-                                                self.visited_ids[id] = False
-                                            else:
-                                                self.visited_ids[id] = True
-                                        elif self.visited_ids[id] is False:
-                                            error_final_report.append(
-                                                self.helper.create_error_dict(validation_level='existence',
-                                                                            error_type='warning',
-                                                                            message=message,
-                                                                            error_label='br_id_existence',
-                                                                            located_in='item',
-                                                                            table=table,
-                                                                            valid=True))
+                                                                                table=table, valid=True)
+                                                jsonl_file.write(error)
 
-                if field == 'volume':
-                    if value:
-                        if not self.wellformed.wellformedness_volume_issue(value):
-                            message = messages['m13']
-                            table = {row_idx: {field: [0]}}
-                            error_final_report.append(
-                                self.helper.create_error_dict(validation_level='csv_wellformedness',
-                                                              error_type='error',
-                                                              message=message,
-                                                              error_label='volume_issue_format',
-                                                              located_in='item',
-                                                              table=table))
+                            if len(br_ids_set) >= 1:
+                                br_id_groups.append(br_ids_set)
 
-                if field == 'issue':
-                    if value:
-                        if not self.wellformed.wellformedness_volume_issue(value):
-                            message = messages['m13']
-                            table = {row_idx: {field: [0]}}
-                            error_final_report.append(
-                                self.helper.create_error_dict(validation_level='csv_wellformedness',
-                                                              error_type='error',
-                                                              message=message,
-                                                              error_label='volume_issue_format',
-                                                              located_in='item',
-                                                              table=table))
+                            if len(br_ids_set) != len(items):  # --> some well-formedness error occurred in the id field
+                                id_ok = False
 
-                if field == 'page':
-                    if value:
-                        if not self.wellformed.wellformedness_page(value):
-                            message = messages['m14']
-                            table = {row_idx: {field: [0]}}
-                            error_final_report.append(
-                                self.helper.create_error_dict(validation_level='csv_wellformedness',
-                                                              error_type='error',
-                                                              message=message,
-                                                              error_label='page_format',
-                                                              located_in='item',
-                                                              table=table))
-                        else:
-                            if not self.wellformed.check_page_interval(value):
-                                message = messages['m18']
+                    if field == 'title':
+                        if value:
+                            if value.isupper():
+                                message = messages['m8']
                                 table = {row_idx: {field: [0]}}
-                                error_final_report.append(
-                                    self.helper.create_error_dict(validation_level='csv_wellformedness',
-                                                                  error_type='warning',
-                                                                  message=message,
-                                                                  error_label='page_interval',
-                                                                  located_in='item',
-                                                                  table=table,
-                                                                  valid=True))
-
-                if field == 'type':
-                    if value:
-                        if not self.wellformed.wellformedness_type(value):
-                            message = messages['m16']
-                            table = {row_idx: {field: [0]}}
-                            error_final_report.append(
-                                self.helper.create_error_dict(validation_level='csv_wellformedness',
-                                                              error_type='error',
-                                                              message=message,
-                                                              error_label='type_format',
-                                                              located_in='item',
-                                                              table=table))
-
-                            type_ok = False
-
-                if field == 'publisher':
-                    # Use structured object's parsed field
-                    publishers = row_obj.publisher
-                    if publishers:
-                        resp_agents = set()
-                        items = publishers  # Already parsed list of AgentItem objects
-                        for item_idx, item in enumerate(items):
-                            # Check orphan RA ID using the raw string
-                            if self.wellformed.orphan_ra_id(item._raw):
-                                message = messages['m10']
-                                table = {row_idx: {field: [item_idx]}}
-                                error_final_report.append(
-                                    self.helper.create_error_dict(validation_level='csv_wellformedness',
-                                                                  error_type='warning',
-                                                                  message=message,
-                                                                  error_label='orphan_ra_id',
-                                                                  located_in='item',
-                                                                  table=table,
-                                                                  valid=True))
-
-                            # Validate using the raw string
-                            if not self.wellformed.wellformedness_publisher_item(item._raw):
-                                message = messages['m9']
-                                table = {row_idx: {field: [item_idx]}}
-                                error_final_report.append(
-                                    self.helper.create_error_dict(validation_level='csv_wellformedness',
-                                                                  error_type='error',
-                                                                  message=message,
-                                                                  error_label='publisher_format',
-                                                                  located_in='item',
-                                                                  table=table))
-                            else:
-                                if item._raw not in resp_agents:
-                                    resp_agents.add(item._raw)
-                                else:  # in-field duplication of the same publisher
-                                    table = {row_idx: {field: [i for i, v in enumerate(items) if v._raw == item._raw]}}
-                                    message = messages['m26']
-
-                                    error_final_report.append(
-                                        self.helper.create_error_dict(validation_level='csv_wellformedness',
-                                                                      error_type='error',
+                                error = self.helper.create_error_dict(validation_level='csv_wellformedness',
+                                                                      error_type='warning',
                                                                       message=message,
-                                                                      error_label='duplicate_ra',
+                                                                      error_label='uppercase_title',
                                                                       located_in='item',
-                                                                      table=table)  # valid=False
-                                    )
+                                                                      table=table,
+                                                                      valid=True)
+                                jsonl_file.write(error)
 
-                                # Use structured object's ids attribute
-                                ids = item.ids
+                    if field == 'author' or field == 'editor':
+                        # Use structured object's parsed field
+                        if field == 'author':
+                            agents = row_obj.author
+                        else:  # field == 'editor'
+                            agents = row_obj.editor
+                        
+                        if agents:
+                            resp_agents = set()
+                            items = agents  # Already parsed list of AgentItem objects
 
-                                for id in ids:
+                            for item_idx, item in enumerate(items):
+                                # Check orphan RA ID using the raw string
+                                if self.wellformed.orphan_ra_id(item._raw):
+                                    message = messages['m10']
+                                    table = {row_idx: {field: [item_idx]}}
+                                    error = self.helper.create_error_dict(validation_level='csv_wellformedness',
+                                                                          error_type='warning',
+                                                                          message=message,
+                                                                          error_label='orphan_ra_id',
+                                                                          located_in='item',
+                                                                          table=table,
+                                                                          valid=True)
+                                    jsonl_file.write(error)
 
-                                    #  2nd validation level: EXTERNAL SYNTAX OF ID (RESPONSIBLE AGENT)
-                                    if not self.syntax.check_id_syntax(id):
-                                        message = messages['m21']
-                                        table = {row_idx: {field: [item_idx]}}
-                                        error_final_report.append(
-                                            self.helper.create_error_dict(validation_level='external_syntax',
+                                # Validate using the raw string
+                                if not self.wellformed.wellformedness_people_item(item._raw):
+                                    message = messages['m9']
+                                    table = {row_idx: {field: [item_idx]}}
+                                    error = self.helper.create_error_dict(validation_level='csv_wellformedness',
                                                                           error_type='error',
                                                                           message=message,
-                                                                          error_label='ra_id_syntax',
+                                                                          error_label='people_item_format',
                                                                           located_in='item',
-                                                                          table=table))
-                                    #  3rd validation level: EXISTENCE OF ID (RESPONSIBLE AGENT)
-                                    else:
-                                        if self.verify_id_existence: # if verify_id_existence is False just skip these operations
-                                            message = messages['m22']
+                                                                          table=table)
+                                    jsonl_file.write(error)
+
+                                else:
+                                    if item._raw not in resp_agents:
+                                        resp_agents.add(item._raw)
+                                    else:  # in-field duplication of the same author/editor
+                                        table = {row_idx: {field: [i for i, v in enumerate(items) if v._raw == item._raw]}}
+                                        message = messages['m26']
+
+                                        error = self.helper.create_error_dict(validation_level='csv_wellformedness',
+                                                                              error_type='error',
+                                                                              message=message,
+                                                                              error_label='duplicate_ra',
+                                                                              located_in='item',
+                                                                              table=table)  # valid=False
+                                        jsonl_file.write(error)
+
+                                    # Use structured object's ids attribute
+                                    ids = item.ids
+
+                                    for id in ids:
+                                        #  2nd validation level: EXTERNAL SYNTAX OF ID (RESPONSIBLE AGENT)
+                                        if not self.syntax.check_id_syntax(id):
+                                            message = messages['m21']
                                             table = {row_idx: {field: [item_idx]}}
-                                            if id not in self.visited_ids:
-                                                if not self.existence.check_id_existence(id):
-                                                    error_final_report.append(
-                                                        self.helper.create_error_dict(validation_level='existence',
-                                                                                    error_type='warning',
-                                                                                    message=message,
-                                                                                    error_label='ra_id_existence',
-                                                                                    located_in='item',
-                                                                                    table=table,
-                                                                                    valid=True))
-                                                    self.visited_ids[id] = False
-                                                else:
-                                                    self.visited_ids[id] = True
-                                            elif self.visited_ids[id] is False:
-                                                error_final_report.append(
-                                                    self.helper.create_error_dict(validation_level='existence',
+                                            error = self.helper.create_error_dict(validation_level='external_syntax',
+                                                                                  error_type='error',
+                                                                                  message=message,
+                                                                                  error_label='ra_id_syntax',
+                                                                                  located_in='item',
+                                                                                  table=table)
+                                            jsonl_file.write(error)
+                                        #  3rd validation level: EXISTENCE OF ID (RESPONSIBLE AGENT)
+                                        else:
+                                            if self.verify_id_existence: # if verify_id_existence is False just skip these operations
+                                                message = messages['m22']
+                                                table = {row_idx: {field: [item_idx]}}
+                                                if id not in self.visited_ids:
+                                                    if not self.existence.check_id_existence(id):
+                                                        error = self.helper.create_error_dict(validation_level='existence',
+                                                                                        error_type='warning',
+                                                                                        message=message,
+                                                                                        error_label='ra_id_existence',
+                                                                                        located_in='item',
+                                                                                        table=table,
+                                                                                        valid=True)
+                                                        jsonl_file.write(error)
+                                                        self.visited_ids[id] = False
+                                                    else:
+                                                        self.visited_ids[id] = True
+                                                elif self.visited_ids[id] is False:
+                                                    error = self.helper.create_error_dict(validation_level='existence',
                                                                                 error_type='warning',
                                                                                 message=message,
                                                                                 error_label='ra_id_existence',
                                                                                 located_in='item',
                                                                                 table=table,
-                                                                                valid=True))
+                                                                                valid=True)
+                                                    jsonl_file.write(error)
+                    if field == 'pub_date':
+                        if value:
+                            if not self.wellformed.wellformedness_date(value):
+                                message = messages['m3']
+                                table = {row_idx: {field: [0]}}
+                                error = self.helper.create_error_dict(validation_level='csv_wellformedness',
+                                                                      error_type='error',
+                                                                      message=message,
+                                                                      error_label='date_format',
+                                                                      located_in='item',
+                                                                      table=table)
+                                jsonl_file.write(error)
 
-            if row_ok and id_ok and type_ok:  # row semantics is checked only when the involved parts are well-formed
+                    if field == 'venue':
+                        # Use structured object's parsed field
+                        venue = row_obj.venue
+                        if venue:
 
-                invalid_semantics = self.semantics.check_semantics(row, id_type_dict)
-                if invalid_semantics:
-                    message = messages['m23']
-                    table = {row_idx: invalid_semantics}
-                    error_final_report.append(
-                        self.helper.create_error_dict(validation_level='semantics',
+                            # Check orphan venue ID using the raw string
+                            if self.wellformed.orphan_venue_id(venue._raw):
+                                message = messages['m15']
+                                table = {row_idx: {field: [0]}}
+                                error = self.helper.create_error_dict(validation_level='csv_wellformedness',
+                                                                      error_type='warning',
+                                                                      message=message,
+                                                                      error_label='orphan_venue_id',
+                                                                      located_in='item',
+                                                                      table=table,
+                                                                      valid=True)
+                                jsonl_file.write(error)
+
+                            # Validate using the raw string
+                            if not self.wellformed.wellformedness_venue(venue._raw):
+                                message = messages['m12']
+                                table = {row_idx: {field: [0]}}
+                                error = self.helper.create_error_dict(validation_level='csv_wellformedness',
+                                                                      error_type='error',
+                                                                      message=message,
+                                                                      error_label='venue_format',
+                                                                      located_in='item',
+                                                                      table=table)
+                                jsonl_file.write(error)
+
+                            else:
+                                # Use structured object's ids attribute
+                                ids = venue.ids
+
+                                for id in ids:
+
+                                    #  2nd validation level: EXTERNAL SYNTAX OF ID (BIBLIOGRAPHIC RESOURCE)
+                                    if not self.syntax.check_id_syntax(id):
+                                        message = messages['m19']
+                                        table = {row_idx: {field: [0]}}
+                                        error = self.helper.create_error_dict(validation_level='external_syntax',
+                                                                              error_type='error',
+                                                                              message=message,
+                                                                              error_label='br_id_syntax',
+                                                                              located_in='item',
+                                                                              table=table)
+                                        jsonl_file.write(error)
+                                    #  3rd validation level: EXISTENCE OF ID (BIBLIOGRAPHIC RESOURCE)
+                                    else:
+                                        if self.verify_id_existence: # if verify_id_existence is False just skip these operations
+                                            message = messages['m20']
+                                            table = {row_idx: {field: [0]}}
+                                            if id not in self.visited_ids:
+                                                if not self.existence.check_id_existence(id):
+                                                    error = self.helper.create_error_dict(validation_level='existence',
+                                                                                        error_type='warning',
+                                                                                        message=message,
+                                                                                        error_label='br_id_existence',
+                                                                                        located_in='item',
+                                                                                        table=table,
+                                                                                        valid=True)
+                                                    jsonl_file.write(error)
+                                                    self.visited_ids[id] = False
+                                                else:
+                                                    self.visited_ids[id] = True
+                                            elif self.visited_ids[id] is False:
+                                                error = self.helper.create_error_dict(validation_level='existence',
+                                                                                error_type='warning',
+                                                                                message=message,
+                                                                                error_label='br_id_existence',
+                                                                                located_in='item',
+                                                                                table=table,
+                                                                                valid=True)
+                                                jsonl_file.write(error)
+
+                    if field == 'volume':
+                        if value:
+                            if not self.wellformed.wellformedness_volume_issue(value):
+                                message = messages['m13']
+                                table = {row_idx: {field: [0]}}
+                                error = self.helper.create_error_dict(validation_level='csv_wellformedness',
+                                                                      error_type='error',
+                                                                      message=message,
+                                                                      error_label='volume_issue_format',
+                                                                      located_in='item',
+                                                                      table=table)
+                                jsonl_file.write(error)
+
+                    if field == 'issue':
+                        if value:
+                            if not self.wellformed.wellformedness_volume_issue(value):
+                                message = messages['m13']
+                                table = {row_idx: {field: [0]}}
+                                error = self.helper.create_error_dict(validation_level='csv_wellformedness',
+                                                                      error_type='error',
+                                                                      message=message,
+                                                                      error_label='volume_issue_format',
+                                                                      located_in='item',
+                                                                      table=table)
+                                jsonl_file.write(error)
+
+                    if field == 'page':
+                        if value:
+                            if not self.wellformed.wellformedness_page(value):
+                                message = messages['m14']
+                                table = {row_idx: {field: [0]}}
+                                error = self.helper.create_error_dict(validation_level='csv_wellformedness',
+                                                                      error_type='error',
+                                                                      message=message,
+                                                                      error_label='page_format',
+                                                                      located_in='item',
+                                                                      table=table)
+                                jsonl_file.write(error)
+                            else:
+                                if not self.wellformed.check_page_interval(value):
+                                    message = messages['m18']
+                                    table = {row_idx: {field: [0]}}
+                                    error = self.helper.create_error_dict(validation_level='csv_wellformedness',
+                                                                      error_type='warning',
+                                                                      message=message,
+                                                                      error_label='page_interval',
+                                                                      located_in='item',
+                                                                      table=table,
+                                                                      valid=True)
+                                    jsonl_file.write(error)
+
+                    if field == 'type':
+                        if value:
+                            if not self.wellformed.wellformedness_type(value):
+                                message = messages['m16']
+                                table = {row_idx: {field: [0]}}
+                                error = self.helper.create_error_dict(validation_level='csv_wellformedness',
+                                                                      error_type='error',
+                                                                      message=message,
+                                                                      error_label='type_format',
+                                                                      located_in='item',
+                                                                      table=table)
+                                jsonl_file.write(error)
+
+                                type_ok = False
+
+                    if field == 'publisher':
+                        # Use structured object's parsed field
+                        publishers = row_obj.publisher
+                        if publishers:
+                            resp_agents = set()
+                            items = publishers  # Already parsed list of AgentItem objects
+                            for item_idx, item in enumerate(items):
+                                # Check orphan RA ID using the raw string
+                                if self.wellformed.orphan_ra_id(item._raw):
+                                    message = messages['m10']
+                                    table = {row_idx: {field: [item_idx]}}
+                                    error = self.helper.create_error_dict(validation_level='csv_wellformedness',
+                                                                          error_type='warning',
+                                                                          message=message,
+                                                                          error_label='orphan_ra_id',
+                                                                          located_in='item',
+                                                                          table=table,
+                                                                          valid=True)
+                                    jsonl_file.write(error)
+
+                                # Validate using the raw string
+                                if not self.wellformed.wellformedness_publisher_item(item._raw):
+                                    message = messages['m9']
+                                    table = {row_idx: {field: [item_idx]}}
+                                    error = self.helper.create_error_dict(validation_level='csv_wellformedness',
+                                                                          error_type='error',
+                                                                          message=message,
+                                                                          error_label='publisher_format',
+                                                                          located_in='item',
+                                                                          table=table)
+                                    jsonl_file.write(error)
+
+                                else:
+                                    if item._raw not in resp_agents:
+                                        resp_agents.add(item._raw)
+                                    else:  # in-field duplication of the same publisher
+                                        table = {row_idx: {field: [i for i, v in enumerate(items) if v._raw == item._raw]}}
+                                        message = messages['m26']
+
+                                        error = self.helper.create_error_dict(validation_level='csv_wellformedness',
+                                                                              error_type='error',
+                                                                              message=message,
+                                                                              error_label='duplicate_ra',
+                                                                              located_in='item',
+                                                                              table=table)  # valid=False
+                                        jsonl_file.write(error)
+
+                                    # Use structured object's ids attribute
+                                    ids = item.ids
+
+                                    for id in ids:
+
+                                        #  2nd validation level: EXTERNAL SYNTAX OF ID (RESPONSIBLE AGENT)
+                                        if not self.syntax.check_id_syntax(id):
+                                            message = messages['m21']
+                                            table = {row_idx: {field: [item_idx]}}
+                                            error = self.helper.create_error_dict(validation_level='external_syntax',
+                                                                                  error_type='error',
+                                                                                  message=message,
+                                                                                  error_label='ra_id_syntax',
+                                                                                  located_in='item',
+                                                                                  table=table)
+                                            jsonl_file.write(error)
+                                        #  3rd validation level: EXISTENCE OF ID (RESPONSIBLE AGENT)
+                                        else:
+                                            if self.verify_id_existence: # if verify_id_existence is False just skip these operations
+                                                message = messages['m22']
+                                                table = {row_idx: {field: [item_idx]}}
+                                                if id not in self.visited_ids:
+                                                    if not self.existence.check_id_existence(id):
+                                                        error = self.helper.create_error_dict(validation_level='existence',
+                                                                                        error_type='warning',
+                                                                                        message=message,
+                                                                                        error_label='ra_id_existence',
+                                                                                        located_in='item',
+                                                                                        table=table,
+                                                                                        valid=True)
+                                                        jsonl_file.write(error)
+                                                        self.visited_ids[id] = False
+                                                    else:
+                                                        self.visited_ids[id] = True
+                                                elif self.visited_ids[id] is False:
+                                                    error = self.helper.create_error_dict(validation_level='existence',
+                                                                                error_type='warning',
+                                                                                message=message,
+                                                                                error_label='ra_id_existence',
+                                                                                located_in='item',
+                                                                                table=table,
+                                                                                valid=True)
+                                                    jsonl_file.write(error)
+
+                if row_ok and id_ok and type_ok:  # row semantics is checked only when the involved parts are well-formed
+
+                    invalid_semantics = self.semantics.check_semantics(row, id_type_dict)
+                    if invalid_semantics:
+                        message = messages['m23']
+                        table = {row_idx: invalid_semantics}
+                        error = self.helper.create_error_dict(validation_level='semantics',
                                                       error_type='error',
                                                       message=message,
                                                       error_label='row_semantics',
                                                       located_in='field',
-                                                      table=table))
+                                                      table=table)
+                        jsonl_file.write(error)
 
-        # GET BIBLIOGRAPHIC ENTITIES
-        br_entities = self.helper.group_ids(br_id_groups)
+            # GET BIBLIOGRAPHIC ENTITIES
+            br_entities = self.helper.group_ids(br_id_groups)
 
-        # GET DUPLICATE BIBLIOGRAPHIC ENTITIES (returns the list of error reports)
-        duplicate_report = self.wellformed.get_duplicates_meta(entities=br_entities, data_dict=duplicate_data,
-                                                               messages=messages)
+            # GET DUPLICATE BIBLIOGRAPHIC ENTITIES (returns the list of error reports)
+            duplicate_report = self.wellformed.get_duplicates_meta(entities=br_entities, data_dict=duplicate_data,
+                                                                   messages=messages)
 
-        if duplicate_report:
-            error_final_report.extend(duplicate_report)
-
-        # write error_final_report to external JSON file
-        with open(self.output_fp_json, 'w', encoding='utf-8') as f:
-            dump(error_final_report, f, indent=4)
+            for error in duplicate_report:
+                jsonl_file.write(error)
 
         # write human-readable validation summary to txt file
-        textual_report = self.helper.create_validation_summary(error_final_report)
+        textual_report_stream= self.helper.create_validation_summary_stream(self.output_fp_json)
         with open(self.output_fp_txt, "w", encoding='utf-8') as f:
-            f.write(textual_report)
+            for l in textual_report_stream:
+                f.write(l)
 
-        return error_final_report
+        is_valid = JSONLStreamIO(self.output_fp_json).is_empty()
+        return is_valid
 
     def _collect_cits_duplicate_data(self):
         """
@@ -671,159 +668,155 @@ class Validator:
             duplicate_data[row_idx] = (row.get('citing_id', ''), row.get('cited_id', ''))
         return (duplicate_data, row_idx+1)
 
-    def validate_cits(self) -> list:
+    def validate_cits(self) -> bool:
         """
-        Validates an instance of CITS-CSV.
+        Validates an instance of CITS-CSV using JSON-Lines streaming output
         :return: the list of errors, i.e. the report of the validation process
         """
-
-        error_final_report = []
-
         messages = self.messages
 
         id_fields_instances = []
         
-        # First pass: Collect data for duplicate detection
-        duplicate_data, rows_count = self._collect_cits_duplicate_data()
-        
-        # Second pass: Stream validation
-        for row_idx, row in enumerate(tqdm(self.csv_stream.stream(), desc="Second pass: Validating", total=rows_count)):
-            # Parse row into structured object
-            row_obj = read_citations_row(row)
+        # Open JSON-L file for streaming output
+        with JSONLStreamIO(self.output_fp_json, 'a') as jsonl_file:
+            # First pass: Collect data for duplicate detection
+            duplicate_data, rows_count = self._collect_cits_duplicate_data()
             
-            for field, value in row.items():
-                if field == 'citing_id' or field == 'cited_id':
-                    # Use structured object's parsed field
-                    if field == 'citing_id':
-                        items = row_obj.citing_id
-                    else:  # field == 'cited_id'
-                        items = row_obj.cited_id
-                    
-                    if not items:  # Check required fields
-                        message = messages['m7']
-                        table = {row_idx: {field: None}}
-                        error_final_report.append(
-                            self.helper.create_error_dict(validation_level='csv_wellformedness',
-                                                          error_type='error',
-                                                          message=message,
-                                                          error_label='required_value_cits',
-                                                          located_in='field',
-                                                          table=table))
-                    else:  # i.e. if string is not empty...
-                        ids_set = set()  # set where to put valid IDs only
-
-                        for item_idx, item in enumerate(items):
-
-                            if item == '':
-                                message = messages['m1']
-                                table = {row_idx: {field: [item_idx]}}
-                                error_final_report.append(
-                                    self.helper.create_error_dict(validation_level='csv_wellformedness',
+            # Second pass: Stream validation
+            for row_idx, row in enumerate(tqdm(self.csv_stream.stream(), desc="Second pass: Validating", total=rows_count)):
+                # Parse row into structured object
+                row_obj = read_citations_row(row)
+                
+                for field, value in row.items():
+                    if field == 'citing_id' or field == 'cited_id':
+                        # Use structured object's parsed field
+                        if field == 'citing_id':
+                            items = row_obj.citing_id
+                        else:  # field == 'cited_id'
+                            items = row_obj.cited_id
+                        
+                        if not items:  # Check required fields
+                            message = messages['m7']
+                            table = {row_idx: {field: None}}
+                            error = self.helper.create_error_dict(validation_level='csv_wellformedness',
                                                                   error_type='error',
                                                                   message=message,
-                                                                  error_label='extra_space',
-                                                                  located_in='item',
-                                                                  table=table))
+                                                                  error_label='required_value_cits',
+                                                                  located_in='field',
+                                                                  table=table)
+                            jsonl_file.write(error)
+                        else:  # i.e. if string is not empty...
+                            ids_set = set()  # set where to put valid IDs only
 
-                            elif not self.wellformed.wellformedness_br_id(item):
-                                message = messages['m2']
-                                table = {row_idx: {field: [item_idx]}}
-                                error_final_report.append(
-                                    self.helper.create_error_dict(validation_level='csv_wellformedness',
-                                                                  error_type='error',
-                                                                  message=message,
-                                                                  error_label='br_id_format',
-                                                                  located_in='item',
-                                                                  table=table))
+                            for item_idx, item in enumerate(items):
 
-                            else:
-                                if item not in ids_set:
-                                    ids_set.add(item)
-                                else:  # in-field duplication of the same ID
-
-                                    table = {row_idx: {field: [i for i, v in enumerate(items) if v == item]}}
-                                    message = messages['m6']
-
-                                    error_final_report.append(
-                                        self.helper.create_error_dict(validation_level='csv_wellformedness',
-                                                                      error_type='error',
-                                                                      message=message,
-                                                                      error_label='duplicate_id',
-                                                                      located_in='item',
-                                                                      table=table)  # 'valid'=False
-                                    )
-                                #  2nd validation level: EXTERNAL SYNTAX OF ID (BIBLIOGRAPHIC RESOURCE)
-                                if not self.syntax.check_id_syntax(item):
-                                    message = messages['m19']
+                                if item == '':
+                                    message = messages['m1']
                                     table = {row_idx: {field: [item_idx]}}
-                                    error_final_report.append(
-                                        self.helper.create_error_dict(validation_level='external_syntax',
-                                                                      error_type='error',
-                                                                      message=message,
-                                                                      error_label='br_id_syntax',
-                                                                      located_in='item',
-                                                                      table=table))
-                                #  3rd validation level: EXISTENCE OF ID (BIBLIOGRAPHIC RESOURCE)
+                                    error = self.helper.create_error_dict(validation_level='csv_wellformedness',
+                                                                          error_type='error',
+                                                                          message=message,
+                                                                          error_label='extra_space',
+                                                                          located_in='item',
+                                                                          table=table)
+                                    jsonl_file.write(error)
+
+                                elif not self.wellformed.wellformedness_br_id(item):
+                                    message = messages['m2']
+                                    table = {row_idx: {field: [item_idx]}}
+                                    error = self.helper.create_error_dict(validation_level='csv_wellformedness',
+                                                                          error_type='error',
+                                                                          message=message,
+                                                                          error_label='br_id_format',
+                                                                          located_in='item',
+                                                                          table=table)
+                                    jsonl_file.write(error)
+
                                 else:
-                                    if self.verify_id_existence: # if verify_id_existence is False just skip these operations
-                                        message = messages['m20']
+                                    if item not in ids_set:
+                                        ids_set.add(item)
+                                    else:  # in-field duplication of the same ID
+
+                                        table = {row_idx: {field: [i for i, v in enumerate(items) if v == item]}}
+                                        message = messages['m6']
+
+                                        error = self.helper.create_error_dict(validation_level='csv_wellformedness',
+                                                                              error_type='error',
+                                                                              message=message,
+                                                                              error_label='duplicate_id',
+                                                                              located_in='item',
+                                                                              table=table)  # 'valid'=False
+                                        jsonl_file.write(error)
+                                    #  2nd validation level: EXTERNAL SYNTAX OF ID (BIBLIOGRAPHIC RESOURCE)
+                                    if not self.syntax.check_id_syntax(item):
+                                        message = messages['m19']
                                         table = {row_idx: {field: [item_idx]}}
-                                        if item not in self.visited_ids:
-                                            if not self.existence.check_id_existence(item):
-                                                error_final_report.append(
-                                                    self.helper.create_error_dict(validation_level='existence',
+                                        error = self.helper.create_error_dict(validation_level='external_syntax',
+                                                                              error_type='error',
+                                                                              message=message,
+                                                                              error_label='br_id_syntax',
+                                                                              located_in='item',
+                                                                              table=table)
+                                        jsonl_file.write(error)
+                                    #  3rd validation level: EXISTENCE OF ID (BIBLIOGRAPHIC RESOURCE)
+                                    else:
+                                        if self.verify_id_existence: # if verify_id_existence is False just skip these operations
+                                            message = messages['m20']
+                                            table = {row_idx: {field: [item_idx]}}
+                                            if item not in self.visited_ids:
+                                                if not self.existence.check_id_existence(item):
+                                                    error = self.helper.create_error_dict(validation_level='existence',
+                                                                                        error_type='warning',
+                                                                                        message=message,
+                                                                                        error_label='br_id_existence',
+                                                                                        located_in='item',
+                                                                                        table=table, valid=True)
+                                                    jsonl_file.write(error)
+                                                    self.visited_ids[item] = False
+                                                else:
+                                                    self.visited_ids[item] = True
+                                            elif self.visited_ids[item] is False:
+                                                error = self.helper.create_error_dict(validation_level='existence',
                                                                                 error_type='warning',
                                                                                 message=message,
                                                                                 error_label='br_id_existence',
                                                                                 located_in='item',
-                                                                                table=table, valid=True))
-                                                self.visited_ids[item] = False
-                                            else:
-                                                self.visited_ids[item] = True
-                                        elif self.visited_ids[item] is False:
-                                            error_final_report.append(
-                                                self.helper.create_error_dict(validation_level='existence',
-                                                                            error_type='warning',
-                                                                            message=message,
-                                                                            error_label='br_id_existence',
-                                                                            located_in='item',
-                                                                            table=table, valid=True))
+                                                                                table=table, valid=True)
+                                                jsonl_file.write(error)
 
-                        if len(ids_set) >= 1:
-                            id_fields_instances.append(ids_set)
+                            if len(ids_set) >= 1:
+                                id_fields_instances.append(ids_set)
 
-                if field == 'citing_publication_date' or field == 'cited_publication_date':
-                    if value:
-                        if not self.wellformed.wellformedness_date(value):
-                            message = messages['m3']
-                            table = {row_idx: {field: [0]}}
-                            error_final_report.append(
-                                self.helper.create_error_dict(validation_level='csv_wellformedness',
-                                                              error_type='error',
-                                                              message=message,
-                                                              error_label='date_format',
-                                                              located_in='item',
-                                                              table=table))
+                    if field == 'citing_publication_date' or field == 'cited_publication_date':
+                        if value:
+                            if not self.wellformed.wellformedness_date(value):
+                                message = messages['m3']
+                                table = {row_idx: {field: [0]}}
+                                error = self.helper.create_error_dict(validation_level='csv_wellformedness',
+                                                                      error_type='error',
+                                                                      message=message,
+                                                                      error_label='date_format',
+                                                                      located_in='item',
+                                                                      table=table)
+                                jsonl_file.write(error)
 
-        # GET BIBLIOGRAPHIC ENTITIES
-        entities = self.helper.group_ids(id_fields_instances)
-        # GET SELF-CITATIONS AND DUPLICATE CITATIONS (returns the list of error reports)
-        duplicate_report = self.wellformed.get_duplicates_cits(entities=entities,
+            # GET BIBLIOGRAPHIC ENTITIES
+            entities = self.helper.group_ids(id_fields_instances)
+            # GET SELF-CITATIONS AND DUPLICATE CITATIONS (returns the list of error reports)
+            duplicate_report = self.wellformed.get_duplicates_cits(entities=entities,
                                                                data_dict=duplicate_data,
                                                                messages=messages)
-        if duplicate_report:
-            error_final_report.extend(duplicate_report)
-
-        # write error_final_report to external JSON file
-        with open(self.output_fp_json, 'w', encoding='utf-8') as f:
-            dump(error_final_report, f, indent=4)
+            for error in duplicate_report:
+                jsonl_file.write(error)
 
         # write human-readable validation summary to txt file
-        textual_report = self.helper.create_validation_summary(error_final_report)
+        textual_report_stream= self.helper.create_validation_summary_stream(self.output_fp_json)
         with open(self.output_fp_txt, "w", encoding='utf-8') as f:
-            f.write(textual_report)
+            for l in textual_report_stream:
+                f.write(l)
 
-        return error_final_report
+        is_valid = JSONLStreamIO(self.output_fp_json).is_empty()
+        return is_valid
 
 
 class ClosureValidator:
@@ -858,15 +851,15 @@ class ClosureValidator:
             raise TableNotMatchingInstance(self.cits_csv_doc, self.cits_validator.table_to_process, 'cits_csv')
 
 
-    def check_closure(self):
+    def check_closure(self)-> tuple[bool, bool]:
 
         ids_positions_meta = dict()
         ids_positions_cits = dict()
         meta_br_ids_groups = []
         cits_br_ids_groups = []
-        
-        meta_json_report = []
-        cits_json_report = []
+
+        meta_is_valid_closure = True
+        cits_is_valid_closure = True
 
         # Collect entities in META
         for row_idx, row in enumerate(self.meta_validator.csv_stream.stream()):
@@ -909,53 +902,66 @@ class ClosureValidator:
         cits_entities = self.helper.group_ids(cits_br_ids_groups) # list of sets where each set uniquely contains the ids of a single BR as it is represented in CITS-CSV
 
         if meta_ids_missing_citations:
-            for br_ids_set in meta_entities: # Write an error instance FOR EACH BR, not for each ID
-                table = dict()
-                # Check if all of the IDs associated with the current BR are in meta_ids_missing_citations (using .issubset), 
-                # i.e., if none of the IDs for this BR is involved in a citation. If you want to write an error even when just one
-                # of the IDs is not involved in a citation, check if br_ids_set.intersection(meta_ids_missing_citations) instead.
-                if br_ids_set.issubset(meta_ids_missing_citations):
-                    # for i in br_ids_set.intersection(meta_ids_missing_citations):
-                    for i in br_ids_set:
-                        for d in ids_positions_meta[i]:
-                            table.update(d)
-                    meta_json_report.append(
-                        self.helper.create_error_dict(
-                            validation_level='csv_wellformedness',
-                            error_type='error',
-                            message=self.messages['m24'], 
-                            error_label='missing_citations',
-                            located_in='row',
-                            table=table
+            with JSONLStreamIO(self.meta_validator.output_fp_json, 'a') as meta_json_file:
+                for br_ids_set in meta_entities: # Write an error instance FOR EACH BR, not for each ID
+                    table = dict()
+                    # Check if all of the IDs associated with the current BR are in meta_ids_missing_citations (using .issubset), 
+                    # i.e., if none of the IDs for this BR is involved in a citation. If you want to write an error even when just one
+                    # of the IDs is not involved in a citation, check if br_ids_set.intersection(meta_ids_missing_citations) instead.
+                    if br_ids_set.issubset(meta_ids_missing_citations):
+                        # for i in br_ids_set.intersection(meta_ids_missing_citations):
+                        for i in br_ids_set:
+                            for d in ids_positions_meta[i]:
+                                table.update(d)
+                        meta_json_file.write(
+                            self.helper.create_error_dict(
+                                validation_level='csv_wellformedness',
+                                error_type='error',
+                                message=self.messages['m24'], 
+                                error_label='missing_citations',
+                                located_in='row',
+                                table=table
+                            )
                         )
-                    )
+                        meta_is_valid_closure = False
 
         if cits_ids_missing_metadata:
-            for br_ids_set in cits_entities: # Write an error instance FOR EACH BR, not for each ID
-                table = dict()
-                # Check if all of the IDs associated with the current BR are in cits_ids_missing_metadata (using .issubset), 
-                # i.e., if none of the IDs for this BR has available metadata. If you want to write an error even when just one
-                # of the IDs has no metadata, check if br_ids_set.intersection(cits_ids_missing_metadata) instead.
-                if br_ids_set.issubset(cits_ids_missing_metadata):
-                    # for i in br_ids_set.intersection(cits_ids_missing_metadata):
-                    for i in br_ids_set:
-                        for d in ids_positions_cits[i]:
-                            table.update(d)
-                    cits_json_report.append(
-                        self.helper.create_error_dict(
-                            validation_level='csv_wellformedness',
-                            error_type='error',
-                            message=self.messages['m25'],
-                            error_label='missing_metadata',
-                            located_in='row',
-                            table=table
+            with JSONLStreamIO(self.cits_validator.output_fp_json, 'a') as cits_json_file:
+                for br_ids_set in cits_entities: # Write an error instance FOR EACH BR, not for each ID
+                    table = dict()
+                    # Check if all of the IDs associated with the current BR are in cits_ids_missing_metadata (using .issubset), 
+                    # i.e., if none of the IDs for this BR has available metadata. If you want to write an error even when just one
+                    # of the IDs has no metadata, check if br_ids_set.intersection(cits_ids_missing_metadata) instead.
+                    if br_ids_set.issubset(cits_ids_missing_metadata):
+                        # for i in br_ids_set.intersection(cits_ids_missing_metadata):
+                        for i in br_ids_set:
+                            for d in ids_positions_cits[i]:
+                                table.update(d)
+                        cits_json_file.write(
+                            self.helper.create_error_dict(
+                                validation_level='csv_wellformedness',
+                                error_type='error',
+                                message=self.messages['m25'],
+                                error_label='missing_metadata',
+                                located_in='row',
+                                table=table
+                            )
                         )
-                    )
+                        cits_is_valid_closure = False
         
-        meta_txt_report = self.helper.create_validation_summary(meta_json_report)
-        cits_txt_report = self.helper.create_validation_summary(cits_json_report)
+        # write human-readable validation summary to txt file for both META and CITS validators
 
-        return (meta_json_report, meta_txt_report, cits_json_report, cits_txt_report)
+        textual_report_stream_meta= self.helper.create_validation_summary_stream(self.meta_validator.output_fp_json)
+        textual_report_stream_cits= self.helper.create_validation_summary_stream(self.cits_validator.output_fp_json)
+
+        with open(self.meta_validator.output_fp_txt, "w", encoding='utf-8') as fm:
+            for lm in textual_report_stream_meta:
+                fm.write(lm)
+        with open(self.cits_validator.output_fp_txt, "w", encoding='utf-8') as fc:
+            for lc in textual_report_stream_cits:
+                fc.write(lc)
+
+        return (meta_is_valid_closure, cits_is_valid_closure)
         
 
     def validate(self):
@@ -963,46 +969,19 @@ class ClosureValidator:
         # TODO: add informative print messages to say which process is running and when it terminates
         
         # Run single validation for META-CSV and CITS-CSV
-        meta_out = self.meta_validator.validate()
-        cits_out = self.cits_validator.validate()
+        meta_is_valid = self.meta_validator.validate()
+        cits_is_valid = self.cits_validator.validate()
 
         # in case some errors have already been found and strict_sequentiality is True, don't run the check on closure
-        if self.strict_sequentiality and (meta_out or cits_out):
+        if self.strict_sequentiality and (not meta_is_valid or not cits_is_valid):
             print('The separate validation of the metadata (META-CSV) and citations (CITS-CSV) tables already detected some error (in one or both documents).',
                   'Skipping the check of transitive closure as strict_sequentiality==True.')
-            return (meta_out, cits_out) 
+            return (meta_is_valid, cits_is_valid) 
         
         # Run validation for transitive closure
-        closure_check_out = self.check_closure()
-        meta_closure_json = closure_check_out[0]
-        meta_closure_txt = closure_check_out[1]
-        cits_closure_json = closure_check_out[2]
-        cits_closure_txt = closure_check_out[3]
+        meta_is_valid_closure, cits_is_valid_closure = self.check_closure()
 
-        # META-CSV
-        # append result of check_closure to the existing JSON validation report
-        with open(self.meta_validator.output_fp_json, 'r', encoding='utf-8') as f:
-            existing_meta_json:list = load(f)
-            final_meta_json = existing_meta_json + meta_closure_json
-        with open(self.meta_validator.output_fp_json, 'w', encoding='utf-8') as f:
-            dump(final_meta_json, f, indent=4)
-
-        # append result of check_closure to the existing TXT validation report
-        with open(self.meta_validator.output_fp_txt, "a", encoding='utf-8') as f:
-            f.write(meta_closure_txt)
-
-        # CITS-CSV
-        # append to JSON (CITS-CSV)
-        with open(self.cits_validator.output_fp_json, 'r', encoding='utf-8') as f:
-            existing_cits_json:list = load(f)
-            final_cits_json = existing_cits_json + cits_closure_json
-        with open(self.cits_validator.output_fp_json, 'w', encoding='utf-8') as f:
-            dump(final_cits_json, f, indent=4)
-        # append to TXT (CITS-CSV)
-        with open(self.cits_validator.output_fp_txt, "a", encoding='utf-8') as f:
-            f.write(cits_closure_txt)
-
-        return (final_meta_json, final_cits_json)
+        return (bool(meta_is_valid_closure and meta_is_valid), bool(cits_is_valid_closure and cits_is_valid))
 
 
 if __name__ == '__main__':
@@ -1010,7 +989,7 @@ if __name__ == '__main__':
     parser.add_argument('-i', '--input', dest='input_csv', required=True,
                         help='The path to the CSV document to validate.', type=str)
     parser.add_argument('-o', '--output', dest='output_dir', required=True,
-                        help='The path to the directory where to store the output JSON file.', type=str)
+                        help='The path to the directory where to store the output JSON-L file.', type=str)
     parser.add_argument('-m', '--use-meta', dest='use_meta_endpoint', action='store_true',
                         help='Use the OC Meta endpoint to check if an ID exists.', required=False)
     parser.add_argument('-s', '--no-id-existence', dest='verify_id_existence', action='store_false',
