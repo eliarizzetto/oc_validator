@@ -36,13 +36,13 @@ class LmdbCache:
         # Cache is automatically closed when exiting context
     """
     
-    def __init__(self, name: str, path: Optional[str] = None, max_size: int = 10**8):
+    def __init__(self, name: str, path: Optional[str] = None, max_size: int =30*1024**3):
         """
         Initialize LMDB cache.
         
         :param name: Unique name for this cache (used in directory name)
         :param path: Optional custom path for LMDB database. If None, uses temp directory.
-        :param max_size: Maximum database size in bytes (default: 10GB)
+        :param max_size: Maximum database size in bytes (default: 30GB)
         """
         self.name = name
         self._env: Optional[lmdb.Environment] = None
