@@ -24,6 +24,7 @@ from oc_validator.id_syntax import IdSyntax
 from oc_validator.id_existence import IdExistence
 from oc_validator.semantics import Semantics
 from oc_validator.table_reader import read_metadata_row, read_citations_row
+from oc_validator.lmdb_cache import LmdbCache, InMemoryCache
 from tqdm import tqdm
 from argparse import ArgumentParser
 import logging
@@ -56,7 +57,18 @@ class TableNotMatchingInstance(ValidationError):
 
 # --- Class for the main process; validates one document at a time via the Validator.validate() method. ---
 class Validator:
-    def __init__(self, csv_doc: str, output_dir: str, use_meta_endpoint=False, verify_id_existence=True):
+    def __init__(self, csv_doc: str, output_dir: str, use_meta_endpoint=False, verify_id_existence=True, 
+                 memory_efficient=True, cache_path=None):
+        """
+        Initialize the Validator.
+        
+        :param csv_doc: Path to the CSV file to validate
+        :param output_dir: Directory to store validation output
+        :param use_meta_endpoint: Whether to use OC Meta endpoint for ID existence checks
+        :param verify_id_existence: Whether to verify ID existence
+        :param memory_efficient: If True, use LMDB for caching (recommended for large files)
+        :param cache_path: Optional custom path for LMDB database
+        """
         self.csv_doc = csv_doc
         self.csv_stream = CSVStreamReader(csv_doc)  # Use streaming instead of loading all data
         self.table_to_process = self.process_selector()
@@ -77,8 +89,33 @@ class Validator:
         elif self.table_to_process == 'cits_csv':
             self.output_fp_json = self._make_output_filepath('out_validate_cits', 'jsonl')
             self.output_fp_txt = self._make_output_filepath('cits_validation_summary', 'txt')
-        self.visited_ids = dict()
+        
+        # Initialize cache based on memory_efficient flag
+        self.memory_efficient = memory_efficient
+        cache_name = f'validator_{hash(csv_doc)}'
+        if memory_efficient:
+            self.id_cache = LmdbCache(cache_name, path=cache_path)
+        else:
+            self.id_cache = InMemoryCache(cache_name, path=cache_path)
+        
+        # Open the cache
+        self.id_cache.open()
+        
         self.verify_id_existence = verify_id_existence
+    
+    def __enter__(self):
+        """Context manager entry."""
+        return self
+    
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        """Context manager exit - ensures cache is properly closed."""
+        self.close()
+        return False
+    
+    def close(self):
+        """Close the cache and clean up resources."""
+        if hasattr(self, 'id_cache') and self.id_cache is not None:
+            self.id_cache.close()
 
     def process_selector(self):
         """
@@ -245,7 +282,7 @@ class Validator:
                                         if self.verify_id_existence: # if verify_id_existence is False just skip these operations
                                             message = messages['m20']
                                             table = {row_idx: {field: [item_idx]}}
-                                            if item not in self.visited_ids:
+                                            if item not in self.id_cache:
                                                 if not self.existence.check_id_existence(item):
                                                     error = self.helper.create_error_dict(validation_level='existence',
                                                                                     error_type='warning',
@@ -254,10 +291,10 @@ class Validator:
                                                                                     located_in='item',
                                                                                     table=table, valid=True)
                                                     jsonl_file.write(error)
-                                                    self.visited_ids[item] = False
+                                                    self.id_cache[item] = False
                                                 else:
-                                                    self.visited_ids[item] = True
-                                            elif self.visited_ids[item] is False:
+                                                    self.id_cache[item] = True
+                                            elif self.id_cache[item] is False:
                                                 error = self.helper.create_error_dict(validation_level='existence',
                                                                                 error_type='warning',
                                                                                 message=message,
@@ -358,7 +395,7 @@ class Validator:
                                             if self.verify_id_existence: # if verify_id_existence is False just skip these operations
                                                 message = messages['m22']
                                                 table = {row_idx: {field: [item_idx]}}
-                                                if id not in self.visited_ids:
+                                                if id not in self.id_cache:
                                                     if not self.existence.check_id_existence(id):
                                                         error = self.helper.create_error_dict(validation_level='existence',
                                                                                         error_type='warning',
@@ -368,10 +405,10 @@ class Validator:
                                                                                         table=table,
                                                                                         valid=True)
                                                         jsonl_file.write(error)
-                                                        self.visited_ids[id] = False
+                                                        self.id_cache[id] = False
                                                     else:
-                                                        self.visited_ids[id] = True
-                                                elif self.visited_ids[id] is False:
+                                                        self.id_cache[id] = True
+                                                elif self.id_cache[id] is False:
                                                     error = self.helper.create_error_dict(validation_level='existence',
                                                                                 error_type='warning',
                                                                                 message=message,
@@ -445,7 +482,7 @@ class Validator:
                                         if self.verify_id_existence: # if verify_id_existence is False just skip these operations
                                             message = messages['m20']
                                             table = {row_idx: {field: [0]}}
-                                            if id not in self.visited_ids:
+                                            if id not in self.id_cache:
                                                 if not self.existence.check_id_existence(id):
                                                     error = self.helper.create_error_dict(validation_level='existence',
                                                                                         error_type='warning',
@@ -455,10 +492,10 @@ class Validator:
                                                                                         table=table,
                                                                                         valid=True)
                                                     jsonl_file.write(error)
-                                                    self.visited_ids[id] = False
+                                                    self.id_cache[id] = False
                                                 else:
-                                                    self.visited_ids[id] = True
-                                            elif self.visited_ids[id] is False:
+                                                    self.id_cache[id] = True
+                                            elif self.id_cache[id] is False:
                                                 error = self.helper.create_error_dict(validation_level='existence',
                                                                                 error_type='warning',
                                                                                 message=message,
@@ -602,7 +639,7 @@ class Validator:
                                             if self.verify_id_existence: # if verify_id_existence is False just skip these operations
                                                 message = messages['m22']
                                                 table = {row_idx: {field: [item_idx]}}
-                                                if id not in self.visited_ids:
+                                                if id not in self.id_cache:
                                                     if not self.existence.check_id_existence(id):
                                                         error = self.helper.create_error_dict(validation_level='existence',
                                                                                         error_type='warning',
@@ -612,10 +649,10 @@ class Validator:
                                                                                         table=table,
                                                                                         valid=True)
                                                         jsonl_file.write(error)
-                                                        self.visited_ids[id] = False
+                                                        self.id_cache[id] = False
                                                     else:
-                                                        self.visited_ids[id] = True
-                                                elif self.visited_ids[id] is False:
+                                                        self.id_cache[id] = True
+                                                elif self.id_cache[id] is False:
                                                     error = self.helper.create_error_dict(validation_level='existence',
                                                                                 error_type='warning',
                                                                                 message=message,
@@ -651,7 +688,7 @@ class Validator:
 
         # write human-readable validation summary to txt file
         textual_report_stream= self.helper.create_validation_summary_stream(self.output_fp_json)
-        with open(self.output_fp_txt, "w", encoding='utf-8') as f:
+        with open(self.output_fp_txt, 'w', encoding='utf-8') as f:
             for l in textual_report_stream:
                 f.write(l)
 
@@ -763,7 +800,7 @@ class Validator:
                                         if self.verify_id_existence: # if verify_id_existence is False just skip these operations
                                             message = messages['m20']
                                             table = {row_idx: {field: [item_idx]}}
-                                            if item not in self.visited_ids:
+                                            if item not in self.id_cache:
                                                 if not self.existence.check_id_existence(item):
                                                     error = self.helper.create_error_dict(validation_level='existence',
                                                                                         error_type='warning',
@@ -772,10 +809,10 @@ class Validator:
                                                                                         located_in='item',
                                                                                         table=table, valid=True)
                                                     jsonl_file.write(error)
-                                                    self.visited_ids[item] = False
+                                                    self.id_cache[item] = False
                                                 else:
-                                                    self.visited_ids[item] = True
-                                            elif self.visited_ids[item] is False:
+                                                    self.id_cache[item] = True
+                                            elif self.id_cache[item] is False:
                                                 error = self.helper.create_error_dict(validation_level='existence',
                                                                                 error_type='warning',
                                                                                 message=message,
@@ -849,6 +886,22 @@ class ClosureValidator:
             raise TableNotMatchingInstance(self.meta_csv_doc, self.meta_validator.table_to_process, 'meta_csv')
         if self.cits_validator.table_to_process != 'cits_csv':
             raise TableNotMatchingInstance(self.cits_csv_doc, self.cits_validator.table_to_process, 'cits_csv')
+    
+    def __enter__(self):
+        """Context manager entry."""
+        return self
+    
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        """Context manager exit - ensures caches are properly closed."""
+        self.close()
+        return False
+    
+    def close(self):
+        """Close caches and clean up resources."""
+        if hasattr(self, 'meta_validator'):
+            self.meta_validator.close()
+        if hasattr(self, 'cits_validator'):
+            self.cits_validator.close()
 
 
     def check_closure(self)-> tuple[bool, bool]:
@@ -995,12 +1048,21 @@ if __name__ == '__main__':
     parser.add_argument('-s', '--no-id-existence', dest='verify_id_existence', action='store_false',
                         help='Skip checking if IDs are registered somewhere, i.e. do not use Meta endpoint nor external APIs.',
                         required=False)
+    parser.add_argument('--memory-efficient', dest='memory_efficient', action='store_true', default=True,
+                        help='Use LMDB for efficient memory usage with large files (default: True). '
+                        'Set to False to use in-memory caching (faster but uses more RAM).',
+                        required=False)
+    parser.add_argument('--cache-path', dest='cache_path', type=str, default=None,
+                        help='Optional custom path for LMDB database storage (default: ./storage/cache).',
+                        required=False)
     args = parser.parse_args()
     v = Validator(
         args.input_csv, 
         args.output_dir, 
         args.use_meta_endpoint,
         args.verify_id_existence,
+        args.memory_efficient,
+        args.cache_path,
     )
     v.validate()
 
