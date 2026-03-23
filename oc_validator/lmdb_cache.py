@@ -15,6 +15,7 @@
 import lmdb
 import pickle
 import os
+import shutil
 import tempfile
 from typing import Optional, Any, Iterator
 from contextlib import contextmanager
@@ -36,13 +37,17 @@ class LmdbCache:
         # Cache is automatically closed when exiting context
     """
     
-    def __init__(self, name: str, path: Optional[str] = None, max_size: int =30*1024**3):
+    def __init__(self, name: str, path: Optional[str] = None, max_size: int = 100 * 1024 * 1024):
         """
         Initialize LMDB cache.
-        
+
         :param name: Unique name for this cache (used in directory name)
         :param path: Optional custom path for LMDB database. If None, uses temp directory.
-        :param max_size: Maximum database size in bytes (default: 30GB)
+        :param max_size: Maximum database size in bytes (default: 100 MB).
+            On Windows LMDB pre-allocates a file of exactly ``max_size`` bytes;
+            on Linux/macOS it uses sparse files so actual disk usage equals only
+            the data written.  Increase this value when processing files with
+            millions of unique IDs (e.g. ``max_size=512*1024*1024`` for 512 MB).
         """
         self.name = name
         self._env: Optional[lmdb.Environment] = None
@@ -87,7 +92,6 @@ class LmdbCache:
         # Clean up temporary directory if we created one
         if self._temp_dir and os.path.exists(self._temp_dir):
             try:
-                import shutil
                 shutil.rmtree(self._temp_dir)
             except Exception:
                 pass  # Ignore cleanup errors
@@ -149,7 +153,11 @@ class LmdbCache:
         return value
     
     def __contains__(self, key: str) -> bool:
-        """Allow 'in' operator: if key in cache"""
+        """Allow 'in' operator: if key in cache.
+        Returns ``False`` for empty strings (LMDB does not allow zero-length keys).
+        """
+        if not key:
+            return False
         if not self._is_open:
             raise RuntimeError("LMDB cache is not open. Use context manager or call open() first.")
         
@@ -306,3 +314,152 @@ class InMemoryCache:
     
     def __bool__(self) -> bool:
         return bool(self._data)
+
+
+class LmdbUnionFind:
+    """
+    A Union-Find (Disjoint Set Union) data structure persisted entirely in LMDB.
+
+    Each element maps to its parent. Roots map to themselves.
+    Supports path-compression on ``find``.  Union is by arbitrary root
+    (i.e. root of x becomes child of root of y).
+
+    This class does NOT manage the lifecycle of the LMDB environment it
+    receives; the caller is responsible for opening and closing ``env``.
+
+    Typical usage inside a ``try/finally`` block::
+
+        env = lmdb.open(tmp_path, map_size=10 * 1024**3, sync=False)
+        try:
+            uf = LmdbUnionFind(env)
+            uf.union('a', 'b')
+            uf.union('b', 'c')
+            for root, members in uf.iter_components():
+                print(root, members)
+        finally:
+            env.close()
+            shutil.rmtree(tmp_path)
+    """
+
+    def __init__(self, env: lmdb.Environment):
+        """
+        :param env: An already-opened ``lmdb.Environment``.
+        """
+        self._env = env
+
+    # ------------------------------------------------------------------
+    # Core operations
+    # ------------------------------------------------------------------
+
+    def find(self, x: str) -> str:
+        """
+        Return the root of the component containing *x*.
+
+        If *x* has never been seen before it is registered as its own root.
+        Path compression is applied: all nodes along the path to the root are
+        updated to point directly to the root.
+
+        :param x: Element identifier (arbitrary non-empty string).
+        :return:  Root identifier of the component.
+        :raises ValueError: if *x* is an empty string (LMDB does not allow
+            zero-length keys).
+        """
+        if not x:
+            raise ValueError("LmdbUnionFind: element identifier must be a non-empty string.")
+        path: list[str] = []
+        current = x
+
+        # --- read-only traversal to locate root ---
+        with self._env.begin(write=False) as txn:
+            while True:
+                raw = txn.get(current.encode('utf-8'))
+                if raw is None:
+                    # 'current' (and therefore 'x') has never been seen.
+                    root = current
+                    is_new = True
+                    break
+                parent = raw.decode('utf-8')
+                if parent == current:
+                    root = current
+                    is_new = False
+                    break
+                path.append(current)
+                current = parent
+
+        # --- write phase: register new node and/or apply path compression ---
+        if is_new or path:
+            with self._env.begin(write=True) as txn:
+                if is_new:
+                    # Register x (and any un-initialised ancestors) as self-root.
+                    txn.put(current.encode('utf-8'), current.encode('utf-8'))
+                # Path compression: point every node on the path directly to root.
+                root_bytes = root.encode('utf-8')
+                for node in path:
+                    txn.put(node.encode('utf-8'), root_bytes)
+
+        return root
+
+    def __contains__(self, x: str) -> bool:
+        """
+        Return ``True`` if *x* has been registered in the Union-Find.
+
+        Unlike ``find``, this method does **not** register *x* as a new node
+        if it is absent.  Returns ``False`` immediately for empty strings
+        (LMDB does not allow zero-length keys).
+
+        :param x: Element identifier to test.
+        :return: ``True`` if *x* is a known element, ``False`` otherwise.
+        """
+        if not x:
+            return False
+        with self._env.begin(write=False) as txn:
+            return txn.get(x.encode('utf-8')) is not None
+
+    def union(self, x: str, y: str) -> None:
+        """
+        Merge the components containing *x* and *y*.
+
+        After the call, ``find(x) == find(y)``.  Specifically the root of *x*
+        is made a child of the root of *y*.
+
+        :param x: First element.
+        :param y: Second element.
+        """
+        rx = self.find(x)
+        ry = self.find(y)
+        if rx != ry:
+            with self._env.begin(write=True) as txn:
+                txn.put(rx.encode('utf-8'), ry.encode('utf-8'))
+
+    # ------------------------------------------------------------------
+    # Component enumeration
+    # ------------------------------------------------------------------
+
+    def iter_components(self) -> Iterator[tuple[str, set]]:
+        """
+        Iterate over all components, yielding ``(root, members_set)`` pairs.
+
+        This performs one full key-scan of the LMDB database followed by one
+        ``find`` call per element (with path-compression side-effects).
+        Peak RAM usage is proportional to the number of distinct components,
+        not the total number of elements.
+
+        :return: Iterator of ``(root_str, set_of_member_strings)`` pairs.
+        """
+        # Collect all keys in a single read transaction.
+        with self._env.begin(write=False) as txn:
+            all_keys: list[str] = [
+                k.decode('utf-8')
+                for k in txn.cursor().iternext(keys=True, values=False)
+            ]
+
+        # Group by root.  find() may write back path-compressed parents but
+        # that is safe because we are no longer inside the read transaction.
+        components: dict[str, set] = {}
+        for key in all_keys:
+            root = self.find(key)
+            if root not in components:
+                components[root] = set()
+            components[root].add(key)
+
+        yield from components.items()

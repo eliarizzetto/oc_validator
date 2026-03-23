@@ -18,13 +18,16 @@ from json import load, dumps
 from os.path import exists, join, dirname, abspath
 from os import makedirs, getcwd
 from re import finditer
+import tempfile
+import shutil
+import lmdb
 from oc_validator.helper import Helper, read_csv, CSVStreamReader, JSONLStreamIO
 from oc_validator.csv_wellformedness import Wellformedness
 from oc_validator.id_syntax import IdSyntax
 from oc_validator.id_existence import IdExistence
 from oc_validator.semantics import Semantics
 from oc_validator.table_reader import read_metadata_row, read_citations_row
-from oc_validator.lmdb_cache import LmdbCache, InMemoryCache
+from oc_validator.lmdb_cache import LmdbCache, InMemoryCache, LmdbUnionFind
 from tqdm import tqdm
 from argparse import ArgumentParser
 import logging
@@ -173,12 +176,19 @@ class Validator:
     def _collect_meta_duplicate_data(self):
         """
         First pass: Collect minimal data needed for duplicate detection.
-        Returns: dict mapping row_idx to id field value
+
+        Returns a tuple ``(LmdbCache, int)`` where the cache maps
+        ``str(row_idx)`` to the raw ``'id'`` field string and the integer is
+        the total row count.  The caller is responsible for closing the cache
+        when it is no longer needed.
         """
-        duplicate_data = {}
+        dup_cache = LmdbCache(f'dup_meta_{abs(hash(self.csv_doc))}')
+        dup_cache.open()
+        row_count = 0
         for row_idx, row in enumerate(tqdm(self.csv_stream.stream(), desc="First pass: Collecting IDs")):
-            duplicate_data[row_idx] = row.get('id', '')
-        return (duplicate_data, row_idx+1)
+            dup_cache[str(row_idx)] = row.get('id', '')
+            row_count += 1
+        return (dup_cache, row_count)
     
     def validate_meta(self) -> bool:
         """
@@ -188,12 +198,16 @@ class Validator:
         messages = self.messages
         id_type_dict = self.id_type_dict
 
-        br_id_groups = []
-        
+        # Set up LMDB Union-Find for entity grouping (replaces in-memory br_id_groups list)
+        uf_tmp_dir = tempfile.mkdtemp(prefix='uf_meta_')
+        uf_env = lmdb.open(uf_tmp_dir, map_size=2 * 1024 ** 3, sync=False, metasync=False)
+        uf = LmdbUnionFind(uf_env)
+        duplicate_data_cache = None
+
         # Open JSON-L file for streaming output
         with JSONLStreamIO(self.output_fp_json, 'a') as jsonl_file:
-            # First pass: Collect data for duplicate detection
-            duplicate_data, rows_count = self._collect_meta_duplicate_data()
+            # First pass: Collect data for duplicate detection (LMDB-backed)
+            duplicate_data_cache, rows_count = self._collect_meta_duplicate_data()
             
             # Second pass: Stream validation
             for row_idx, row in enumerate(tqdm(self.csv_stream.stream(), desc="Second pass: Validating", total=rows_count)):
@@ -304,7 +318,11 @@ class Validator:
                                                 jsonl_file.write(error)
 
                             if len(br_ids_set) >= 1:
-                                br_id_groups.append(br_ids_set)
+                                # Register IDs in LMDB Union-Find (replaces in-memory br_id_groups list)
+                                ids_list = list(br_ids_set)
+                                uf.find(ids_list[0])  # ensure single-member entities are registered
+                                for _ui in range(1, len(ids_list)):
+                                    uf.union(ids_list[0], ids_list[_ui])
 
                             if len(br_ids_set) != len(items):  # --> some well-formedness error occurred in the id field
                                 id_ok = False
@@ -676,15 +694,17 @@ class Validator:
                                                       table=table)
                         jsonl_file.write(error)
 
-            # GET BIBLIOGRAPHIC ENTITIES
-            br_entities = self.helper.group_ids(br_id_groups)
-
-            # GET DUPLICATE BIBLIOGRAPHIC ENTITIES (returns the list of error reports)
-            duplicate_report = self.wellformed.get_duplicates_meta(entities=br_entities, data_dict=duplicate_data,
-                                                                   messages=messages)
-
+            # GET DUPLICATE BIBLIOGRAPHIC ENTITIES (LMDB-backed, no in-memory entity list needed)
+            duplicate_report = self.wellformed.get_duplicates_meta(
+                uf=uf, data_cache=duplicate_data_cache, messages=messages)
             for error in duplicate_report:
                 jsonl_file.write(error)
+
+        # Cleanup LMDB resources used for duplicate detection
+        uf_env.close()
+        shutil.rmtree(uf_tmp_dir, ignore_errors=True)
+        if duplicate_data_cache is not None:
+            duplicate_data_cache.close()
 
         # write human-readable validation summary to txt file
         textual_report_stream= self.helper.create_validation_summary_stream(self.output_fp_json)
@@ -698,12 +718,19 @@ class Validator:
     def _collect_cits_duplicate_data(self):
         """
         First pass: Collect minimal data needed for duplicate detection in CITS-CSV.
-        Returns: dict mapping row_idx to tuple of (citing_id, cited_id) values
+
+        Returns a tuple ``(LmdbCache, int)`` where the cache maps
+        ``str(row_idx)`` to a ``(citing_id_str, cited_id_str)`` tuple and the
+        integer is the total row count.  The caller is responsible for closing
+        the cache when it is no longer needed.
         """
-        duplicate_data = {}
+        dup_cache = LmdbCache(f'dup_cits_{abs(hash(self.csv_doc))}')
+        dup_cache.open()
+        row_count = 0
         for row_idx, row in enumerate(tqdm(self.csv_stream.stream(), desc="First pass: Collecting IDs")):
-            duplicate_data[row_idx] = (row.get('citing_id', ''), row.get('cited_id', ''))
-        return (duplicate_data, row_idx+1)
+            dup_cache[str(row_idx)] = (row.get('citing_id', ''), row.get('cited_id', ''))
+            row_count += 1
+        return (dup_cache, row_count)
 
     def validate_cits(self) -> bool:
         """
@@ -712,12 +739,16 @@ class Validator:
         """
         messages = self.messages
 
-        id_fields_instances = []
-        
+        # Set up LMDB Union-Find for entity grouping (replaces in-memory id_fields_instances list)
+        uf_tmp_dir = tempfile.mkdtemp(prefix='uf_cits_')
+        uf_env = lmdb.open(uf_tmp_dir, map_size=100 * 1024 * 1024, sync=False, metasync=False)
+        uf = LmdbUnionFind(uf_env)
+        duplicate_data_cache = None
+
         # Open JSON-L file for streaming output
         with JSONLStreamIO(self.output_fp_json, 'a') as jsonl_file:
-            # First pass: Collect data for duplicate detection
-            duplicate_data, rows_count = self._collect_cits_duplicate_data()
+            # First pass: Collect data for duplicate detection (LMDB-backed)
+            duplicate_data_cache, rows_count = self._collect_cits_duplicate_data()
             
             # Second pass: Stream validation
             for row_idx, row in enumerate(tqdm(self.csv_stream.stream(), desc="Second pass: Validating", total=rows_count)):
@@ -822,7 +853,11 @@ class Validator:
                                                 jsonl_file.write(error)
 
                             if len(ids_set) >= 1:
-                                id_fields_instances.append(ids_set)
+                                # Register IDs in LMDB Union-Find (replaces in-memory id_fields_instances list)
+                                ids_list = list(ids_set)
+                                uf.find(ids_list[0])  # ensure single-member entities are registered
+                                for _ui in range(1, len(ids_list)):
+                                    uf.union(ids_list[0], ids_list[_ui])
 
                     if field == 'citing_publication_date' or field == 'cited_publication_date':
                         if value:
@@ -837,14 +872,17 @@ class Validator:
                                                                       table=table)
                                 jsonl_file.write(error)
 
-            # GET BIBLIOGRAPHIC ENTITIES
-            entities = self.helper.group_ids(id_fields_instances)
-            # GET SELF-CITATIONS AND DUPLICATE CITATIONS (returns the list of error reports)
-            duplicate_report = self.wellformed.get_duplicates_cits(entities=entities,
-                                                               data_dict=duplicate_data,
-                                                               messages=messages)
+            # GET SELF-CITATIONS AND DUPLICATE CITATIONS (LMDB-backed, no in-memory entity list needed)
+            duplicate_report = self.wellformed.get_duplicates_cits(
+                uf=uf, data_cache=duplicate_data_cache, messages=messages)
             for error in duplicate_report:
                 jsonl_file.write(error)
+
+        # Cleanup LMDB resources used for duplicate detection
+        uf_env.close()
+        shutil.rmtree(uf_tmp_dir, ignore_errors=True)
+        if duplicate_data_cache is not None:
+            duplicate_data_cache.close()
 
         # write human-readable validation summary to txt file
         textual_report_stream= self.helper.create_validation_summary_stream(self.output_fp_json)
@@ -904,108 +942,136 @@ class ClosureValidator:
             self.cits_validator.close()
 
 
-    def check_closure(self)-> tuple[bool, bool]:
+    def check_closure(self) -> tuple[bool, bool]:
+        """
+        Check transitive closure between META-CSV and CITS-CSV using LMDB-backed
+        structures throughout.  No large dicts or lists of sets are held in RAM.
 
-        ids_positions_meta = dict()
-        ids_positions_cits = dict()
-        meta_br_ids_groups = []
-        cits_br_ids_groups = []
+        Four LMDB resources are used:
+        - ``meta_uf`` / ``cits_uf``: Union-Find for grouping IDs into entities.
+        - ``meta_positions_cache`` / ``cits_positions_cache``: mapping each ID to
+          the list of position dicts where it appears in its respective table.
 
+        The closure check avoids building large Python sets by querying the LMDB
+        caches directly with O(1) ``__contains__`` lookups.
+        """
         meta_is_valid_closure = True
         cits_is_valid_closure = True
 
-        # Collect entities in META
-        for row_idx, row in enumerate(self.meta_validator.csv_stream.stream()):
-            row_obj = read_metadata_row(row)
-            if row_obj.id:
-                ids = row_obj.id
-                meta_br_ids_groups.append(set(ids))
-                for item in set(ids):
-                    if not ids_positions_meta.get(item):
-                        ids_positions_meta[item] = [{row_idx: {'id': list(range(len(ids)))}}]
-                    else:
-                        ids_positions_meta[item].append({row_idx: {'id': list(range(len(ids)))}})
+        # --- Set up LMDB Union-Finds (entity grouping) ---
+        meta_uf_dir = tempfile.mkdtemp(prefix='uf_closure_meta_')
+        meta_uf_env = lmdb.open(meta_uf_dir, map_size=100 * 1024 * 1024, sync=False, metasync=False)
+        meta_uf = LmdbUnionFind(meta_uf_env)
 
-        # Collect entities in CITS-CSV
-        for row_idx, row in enumerate(self.cits_validator.csv_stream.stream()):
-            row_obj = read_citations_row(row)
-            if row_obj.citing_id:
-                ids = row_obj.citing_id
-                cits_br_ids_groups.append(set(ids))
-                for item in set(ids):
-                    if not ids_positions_cits.get(item):
-                        ids_positions_cits[item] = [{row_idx: {'citing_id': list(range(len(ids)))}}]
-                    else:
-                        ids_positions_cits[item].append({row_idx: {'citing_id': list(range(len(ids)))}})
-            if row_obj.cited_id:
-                ids = row_obj.cited_id
-                cits_br_ids_groups.append(set(ids))
-                for item in set(ids):
-                    if not ids_positions_cits.get(item):
-                        ids_positions_cits[item] = [{row_idx: {'cited_id': list(range(len(ids)))}}]
-                    else:
-                        ids_positions_cits[item].append({row_idx: {'cited_id': list(range(len(ids)))}})
+        cits_uf_dir = tempfile.mkdtemp(prefix='uf_closure_cits_')
+        cits_uf_env = lmdb.open(cits_uf_dir, map_size=100 * 1024 * 1024, sync=False, metasync=False)
+        cits_uf = LmdbUnionFind(cits_uf_env)
 
-        ids_with_metadata = set(ids_positions_meta.keys())
-        ids_in_citations = set(ids_positions_cits.keys())
-        meta_ids_missing_citations = ids_with_metadata.difference(ids_in_citations) # entities that have metadata but are not involved in any citation
-        cits_ids_missing_metadata = ids_in_citations.difference(ids_with_metadata) # entities that are represented in citations but have no metadata
+        # --- Set up LMDB position caches (id → list of position dicts) ---
+        meta_positions_cache = LmdbCache('closure_meta_positions')
+        meta_positions_cache.open()
+        cits_positions_cache = LmdbCache('closure_cits_positions')
+        cits_positions_cache.open()
 
-        meta_entities = self.helper.group_ids(meta_br_ids_groups) # list of sets where each set uniquely contains the ids of a single BR as it is represented in META-CSV
-        cits_entities = self.helper.group_ids(cits_br_ids_groups) # list of sets where each set uniquely contains the ids of a single BR as it is represented in CITS-CSV
+        try:
+            # --- Collect entities and positions from META ---
+            for row_idx, row in enumerate(self.meta_validator.csv_stream.stream()):
+                row_obj = read_metadata_row(row)
+                if row_obj.id:
+                    ids = row_obj.id
+                    ids_unique = list(set(ids))
+                    # Register / union all IDs in LMDB Union-Find
+                    meta_uf.find(ids_unique[0])
+                    for _i in range(1, len(ids_unique)):
+                        meta_uf.union(ids_unique[0], ids_unique[_i])
+                    # Record position for each unique ID (read-modify-write)
+                    pos_entry = {row_idx: {'id': list(range(len(ids)))}}
+                    for item in ids_unique:
+                        existing = meta_positions_cache.get(item)
+                        if existing is None:
+                            meta_positions_cache[item] = [pos_entry]
+                        else:
+                            existing.append(pos_entry)
+                            meta_positions_cache[item] = existing
 
-        if meta_ids_missing_citations:
+            # --- Collect entities and positions from CITS-CSV ---
+            for row_idx, row in enumerate(self.cits_validator.csv_stream.stream()):
+                row_obj = read_citations_row(row)
+                for id_field, field_name in (
+                    (row_obj.citing_id, 'citing_id'),
+                    (row_obj.cited_id, 'cited_id'),
+                ):
+                    if id_field:
+                        ids = id_field
+                        ids_unique = list(set(ids))
+                        cits_uf.find(ids_unique[0])
+                        for _i in range(1, len(ids_unique)):
+                            cits_uf.union(ids_unique[0], ids_unique[_i])
+                        pos_entry = {row_idx: {field_name: list(range(len(ids)))}}
+                        for item in ids_unique:
+                            existing = cits_positions_cache.get(item)
+                            if existing is None:
+                                cits_positions_cache[item] = [pos_entry]
+                            else:
+                                existing.append(pos_entry)
+                                cits_positions_cache[item] = existing
+
+            # --- Check META entities that have no citations ---
+            # An entity is "missing citations" when ALL of its IDs are absent from cits_positions_cache.
+            # We check membership directly in LMDB (O(1) per lookup) — no large Python sets needed.
             with JSONLStreamIO(self.meta_validator.output_fp_json, 'a') as meta_json_file:
-                for br_ids_set in meta_entities: # Write an error instance FOR EACH BR, not for each ID
-                    table = dict()
-                    # Check if all of the IDs associated with the current BR are in meta_ids_missing_citations (using .issubset), 
-                    # i.e., if none of the IDs for this BR is involved in a citation. If you want to write an error even when just one
-                    # of the IDs is not involved in a citation, check if br_ids_set.intersection(meta_ids_missing_citations) instead.
-                    if br_ids_set.issubset(meta_ids_missing_citations):
-                        # for i in br_ids_set.intersection(meta_ids_missing_citations):
-                        for i in br_ids_set:
-                            for d in ids_positions_meta[i]:
-                                table.update(d)
-                        meta_json_file.write(
-                            self.helper.create_error_dict(
-                                validation_level='csv_wellformedness',
-                                error_type='error',
-                                message=self.messages['m24'], 
-                                error_label='missing_citations',
-                                located_in='row',
-                                table=table
+                for _root, br_ids_set in meta_uf.iter_components():
+                    if all(id_ not in cits_positions_cache for id_ in br_ids_set):
+                        table: dict = {}
+                        for id_ in br_ids_set:
+                            for pos_dict in (meta_positions_cache.get(id_) or []):
+                                table.update(pos_dict)
+                        if table:
+                            meta_json_file.write(
+                                self.helper.create_error_dict(
+                                    validation_level='csv_wellformedness',
+                                    error_type='error',
+                                    message=self.messages['m24'],
+                                    error_label='missing_citations',
+                                    located_in='row',
+                                    table=table,
+                                )
                             )
-                        )
-                        meta_is_valid_closure = False
+                            meta_is_valid_closure = False
 
-        if cits_ids_missing_metadata:
+            # --- Check CITS entities that have no metadata ---
             with JSONLStreamIO(self.cits_validator.output_fp_json, 'a') as cits_json_file:
-                for br_ids_set in cits_entities: # Write an error instance FOR EACH BR, not for each ID
-                    table = dict()
-                    # Check if all of the IDs associated with the current BR are in cits_ids_missing_metadata (using .issubset), 
-                    # i.e., if none of the IDs for this BR has available metadata. If you want to write an error even when just one
-                    # of the IDs has no metadata, check if br_ids_set.intersection(cits_ids_missing_metadata) instead.
-                    if br_ids_set.issubset(cits_ids_missing_metadata):
-                        # for i in br_ids_set.intersection(cits_ids_missing_metadata):
-                        for i in br_ids_set:
-                            for d in ids_positions_cits[i]:
-                                table.update(d)
-                        cits_json_file.write(
-                            self.helper.create_error_dict(
-                                validation_level='csv_wellformedness',
-                                error_type='error',
-                                message=self.messages['m25'],
-                                error_label='missing_metadata',
-                                located_in='row',
-                                table=table
+                for _root, br_ids_set in cits_uf.iter_components():
+                    if all(id_ not in meta_positions_cache for id_ in br_ids_set):
+                        table = {}
+                        for id_ in br_ids_set:
+                            for pos_dict in (cits_positions_cache.get(id_) or []):
+                                table.update(pos_dict)
+                        if table:
+                            cits_json_file.write(
+                                self.helper.create_error_dict(
+                                    validation_level='csv_wellformedness',
+                                    error_type='error',
+                                    message=self.messages['m25'],
+                                    error_label='missing_metadata',
+                                    located_in='row',
+                                    table=table,
+                                )
                             )
-                        )
-                        cits_is_valid_closure = False
-        
-        # write human-readable validation summary to txt file for both META and CITS validators
+                            cits_is_valid_closure = False
 
-        textual_report_stream_meta= self.helper.create_validation_summary_stream(self.meta_validator.output_fp_json)
-        textual_report_stream_cits= self.helper.create_validation_summary_stream(self.cits_validator.output_fp_json)
+        finally:
+            # Cleanup all LMDB resources
+            meta_uf_env.close()
+            shutil.rmtree(meta_uf_dir, ignore_errors=True)
+            cits_uf_env.close()
+            shutil.rmtree(cits_uf_dir, ignore_errors=True)
+            meta_positions_cache.close()
+            cits_positions_cache.close()
+
+        # Write human-readable validation summaries for both tables
+        textual_report_stream_meta = self.helper.create_validation_summary_stream(self.meta_validator.output_fp_json)
+        textual_report_stream_cits = self.helper.create_validation_summary_stream(self.cits_validator.output_fp_json)
 
         with open(self.meta_validator.output_fp_txt, "w", encoding='utf-8') as fm:
             for lm in textual_report_stream_meta:

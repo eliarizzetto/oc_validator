@@ -20,3 +20,8 @@ oc_validator/interface/tmp.py
 
 # Storage dir for validated IDs
 storage/
+
+# cline
+.clineignore
+cline/
+*.cline*

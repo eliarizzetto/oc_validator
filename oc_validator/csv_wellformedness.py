@@ -15,6 +15,7 @@
 from re import match, search, sub
 from roman import fromRoman, InvalidRomanNumeralError
 from oc_validator.helper import Helper
+from oc_validator.lmdb_cache import LmdbCache, LmdbUnionFind
 from json import load
 from os.path import join, dirname, abspath
 from typing import Generator
@@ -395,72 +396,84 @@ class Wellformedness:
     #                                               table=table))
     #     return report
 
-    def get_duplicates_cits(self, entities: list, data_dict: dict, messages) -> Generator: 
+    def get_duplicates_cits(self, uf: LmdbUnionFind, data_cache: LmdbCache, messages) -> Generator:
         """
-        Find duplicate citations and self-citations in CITS-CSV.
-        data_dict is a dict mapping row_idx to tuple of (citing_id, cited_id) values
+        Find duplicate citations and self-citations in CITS-CSV using LMDB-backed storage.
+
+        No large structures are held in RAM: the citation-occurrence map is
+        persisted in a temporary ``LmdbCache`` and iterated at the end to
+        detect duplicates.
+
+        :param uf: ``LmdbUnionFind`` populated with all well-formed IDs
+            encountered during the second validation pass.
+        :param data_cache: ``LmdbCache`` mapping ``str(row_idx)`` to a
+            ``(citing_id_str, cited_id_str)`` tuple for every row.
+        :param messages: Error-message template dict (from messages.yaml).
+        :return: Generator of error-dict objects (same format as before).
         """
-        # Build a fast lookup map: ID -> entity index
-        id_to_entity_index = {}
-        for idx, entity_set in enumerate(entities):
-            for id_ in entity_set:
-                id_to_entity_index[id_] = idx
+        # citation_map_cache: key = "citing_root\x00cited_root",
+        #                     value = {row_idx: {'citing_id': [...], 'cited_id': [...]}}
+        with LmdbCache('dup_cits_citation_map') as citation_map_cache:
+            for str_idx, (citing_id, cited_id) in data_cache.items():
+                row_idx = int(str_idx)
+                citing_items = citing_id.split(' ')
+                cited_items = cited_id.split(' ')
 
-        citation_map = {}  # key: (citing_idx, cited_idx), value: table of row indices
+                # Find first registered citing / cited entity root (O(1) LMDB lookup each)
+                citing_root = next(
+                    (uf.find(item) for item in citing_items if item in uf), None
+                )
+                cited_root = next(
+                    (uf.find(item) for item in cited_items if item in uf), None
+                )
 
-        for row_idx, (citing_id, cited_id) in data_dict.items():
-            citing_items = citing_id.split(' ')
-            cited_items = cited_id.split(' ')
+                if citing_root is None or cited_root is None:
+                    continue  # row has no mappable entities — skip
 
-            # Find first mapped citing entity
-            citing_idx = next((id_to_entity_index.get(item) for item in citing_items if item in id_to_entity_index), None)
-            cited_idx = next((id_to_entity_index.get(item) for item in cited_items if item in id_to_entity_index), None)
+                # SELF-CITATION: citing and cited entity are the same
+                if citing_root == cited_root:
+                    table = {
+                        row_idx: {
+                            'citing_id': list(range(len(citing_items))),
+                            'cited_id': list(range(len(cited_items))),
+                        }
+                    }
+                    yield self.helper.create_error_dict(
+                        validation_level='csv_wellformedness',
+                        error_type='warning',
+                        message=messages['m4'],
+                        error_label='self-citation',
+                        located_in='field',
+                        table=table,
+                        valid=True,
+                    )
 
-            if citing_idx is None or cited_idx is None:
-                continue  # skip rows with unmapped entities
-
-            # SELF-CITATION
-            if citing_idx == cited_idx:
-                table = {
+                # Accumulate citation occurrences in LMDB (read-modify-write)
+                cit_key = f'{citing_root}\x00{cited_root}'
+                row_entry = {
                     row_idx: {
                         'citing_id': list(range(len(citing_items))),
-                        'cited_id': list(range(len(cited_items)))
+                        'cited_id': list(range(len(cited_items))),
                     }
                 }
-                message = messages['m4']
-                error = self.helper.create_error_dict(
-                            validation_level='csv_wellformedness',
-                            error_type='warning',
-                            message=message,
-                            error_label='self-citation',
-                            located_in='field',
-                            table=table,
-                            valid=True
-                        )
-                yield error
+                existing = citation_map_cache.get(cit_key)
+                if existing is None:
+                    citation_map_cache[cit_key] = row_entry
+                else:
+                    existing.update(row_entry)
+                    citation_map_cache[cit_key] = existing
 
-            # Track citations
-            key = (citing_idx, cited_idx)
-            if key not in citation_map:
-                citation_map[key] = {}
-            citation_map[key][row_idx] = {
-                'citing_id': list(range(len(citing_items))),
-                'cited_id': list(range(len(cited_items)))
-            }
-
-        # Identify duplicates
-        for citation, table in citation_map.items():
-            if len(table) > 1:
-                message = messages['m5']
-                error = self.helper.create_error_dict(
-                            validation_level='csv_wellformedness',
-                            error_type='error',
-                            message=message,
-                            error_label='duplicate_citation',
-                            located_in='row',
-                            table=table
-                        )
-                yield error
+            # Second scan: yield errors for citations that appear more than once
+            for _cit_key, table in citation_map_cache.items():
+                if len(table) > 1:
+                    yield self.helper.create_error_dict(
+                        validation_level='csv_wellformedness',
+                        error_type='error',
+                        message=messages['m5'],
+                        error_label='duplicate_citation',
+                        located_in='row',
+                        table=table,
+                    )
 
     # # THIS FUNCTION IS THE OLD FUNCTION TO GET DUPLICATES, KEPT HERE FOR REFERENCE.
     # def get_duplicates_meta(self, entities: list, data_dict: list, messages) -> list:
@@ -509,47 +522,53 @@ class Wellformedness:
 
     #     return report
 
-    def get_duplicates_meta(self, entities: list, data_dict: dict, messages) -> Generator:
+    def get_duplicates_meta(self, uf: LmdbUnionFind, data_cache: LmdbCache, messages) -> Generator:
         """
-        Find duplicate bibliographic entities in META-CSV.
-        data_dict is a dict mapping row_idx to 'id' field value (string)
+        Find duplicate bibliographic entities in META-CSV using LMDB-backed storage.
+
+        No large structures are held in RAM: the entity-occurrence map is
+        persisted in a temporary ``LmdbCache`` and iterated at the end to
+        detect duplicates.
+
+        :param uf: ``LmdbUnionFind`` populated with all well-formed IDs
+            encountered during the second validation pass.
+        :param data_cache: ``LmdbCache`` mapping ``str(row_idx)`` to the raw
+            ``'id'`` field string for every row.
+        :param messages: Error-message template dict (from messages.yaml).
+        :return: Generator of error-dict objects (same format as before).
         """
-        # Build ID → entity index lookup
-        id_to_entity_index = {}
-        for idx, entity_set in enumerate(entities):
-            for id_ in entity_set:
-                id_to_entity_index[id_] = str(idx)
+        # meta_map_cache: key = entity root string,
+        #                 value = {row_idx: {'id': [0, 1, ...]}}
+        with LmdbCache('dup_meta_entity_map') as meta_map_cache:
+            for str_idx, id_value in data_cache.items():
+                row_idx = int(str_idx)
+                items = id_value.split(' ')
 
-        # Track meta_id → table
-        meta_map = {}
+                # Find the first registered ID and resolve its entity root
+                root = next(
+                    (uf.find(item) for item in items if item in uf), None
+                )
+                if root is None:
+                    continue  # row has no valid mapped IDs — skip
 
-        for row_idx, id_value in data_dict.items():
-            items = id_value.split(' ')
+                row_table = {row_idx: {'id': list(range(len(items)))}}
 
-            # Find first valid ID that maps to an entity
-            meta_id = next((id_to_entity_index.get(item) for item in items if item in id_to_entity_index), None)
+                # Read-modify-write: accumulate occurrences per entity root
+                existing = meta_map_cache.get(root)
+                if existing is None:
+                    meta_map_cache[root] = row_table
+                else:
+                    existing.update(row_table)
+                    meta_map_cache[root] = existing
 
-            if meta_id is None:
-                continue  # skip rows with no valid ID
-
-            # Build row table
-            row_table = {row_idx: {'id': list(range(len(items)))}}
-
-            if meta_id not in meta_map:
-                meta_map[meta_id] = row_table
-            else:
-                meta_map[meta_id].update(row_table)
-
-        # Collect duplicates
-        for meta_id, table in meta_map.items():
-            if len(table) > 1:
-                message = messages['m11']
-                error = self.helper.create_error_dict(
-                            validation_level='csv_wellformedness',
-                            error_type='error',
-                            message=message,
-                            error_label='duplicate_br',
-                            located_in='row',
-                            table=table
-                        )
-                yield error
+            # Second scan: yield errors for entities that appear more than once
+            for _root, table in meta_map_cache.items():
+                if len(table) > 1:
+                    yield self.helper.create_error_dict(
+                        validation_level='csv_wellformedness',
+                        error_type='error',
+                        message=messages['m11'],
+                        error_label='duplicate_br',
+                        located_in='row',
+                        table=table,
+                    )
