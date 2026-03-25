@@ -3,7 +3,7 @@ import pickle
 import os
 import shutil
 import tempfile
-from typing import Optional, Any, Iterator
+from typing import Optional, Any, Iterator, Union
 from contextlib import contextmanager
 
 
@@ -449,3 +449,126 @@ class LmdbUnionFind:
             components[root].add(key)
 
         yield from components.items()
+
+
+class InMemoryUnionFind:
+    """
+    An in-memory Union-Find (Disjoint Set Union) data structure.
+
+    Each element maps to its parent. Roots map to themselves.
+    Supports path-compression on ``find``.  Union is by arbitrary root
+    (i.e. root of x becomes child of root of y).
+
+    This is a memory-based alternative to LmdbUnionFind, suitable for
+    small datasets where LMDB overhead is unnecessary.
+
+    Usage::
+
+        uf = InMemoryUnionFind()
+        uf.union('a', 'b')
+        uf.union('b', 'c')
+        for root, members in uf.iter_components():
+            print(root, members)
+    """
+
+    def __init__(self):
+        """
+        Initialize an empty Union-Find structure.
+        """
+        self._data: dict[str, str] = {}
+
+    # ------------------------------------------------------------------
+    # Core operations
+    # ------------------------------------------------------------------
+
+    def find(self, x: str) -> str:
+        """
+        Return the root of the component containing *x*.
+
+        If *x* has never been seen before it is registered as its own root.
+        Path compression is applied: all nodes along the path to the root are
+        updated to point directly to the root.
+
+        :param x: Element identifier (arbitrary non-empty string).
+        :return:  Root identifier of the component.
+        :raises ValueError: if *x* is an empty string.
+        """
+        if not x:
+            raise ValueError("InMemoryUnionFind: element identifier must be a non-empty string.")
+
+        # If x is not registered, register it as its own root
+        if x not in self._data:
+            self._data[x] = x
+            return x
+
+        # Find root with path compression
+        path: list[str] = []
+        current = x
+        while current != self._data[current]:
+            path.append(current)
+            current = self._data[current]
+        root = current
+
+        # Apply path compression
+        for node in path:
+            self._data[node] = root
+
+        return root
+
+    def __contains__(self, x: str) -> bool:
+        """
+        Return ``True`` if *x* has been registered in the Union-Find.
+
+        Unlike ``find``, this method does **not** register *x* as a new node
+        if it is absent.
+
+        :param x: Element identifier to test.
+        :return: ``True`` if *x* is a known element, ``False`` otherwise.
+        """
+        if not x:
+            return False
+        return x in self._data
+
+    def union(self, x: str, y: str) -> None:
+        """
+        Merge the components containing *x* and *y*.
+
+        After the call, ``find(x) == find(y)``.  Specifically the root of *x*
+        is made a child of the root of *y*.
+
+        :param x: First element.
+        :param y: Second element.
+        """
+        rx = self.find(x)
+        ry = self.find(y)
+        if rx != ry:
+            self._data[rx] = ry
+
+    # ------------------------------------------------------------------
+    # Component enumeration
+    # ------------------------------------------------------------------
+
+    def iter_components(self) -> Iterator[tuple[str, set]]:
+        """
+        Iterate over all components, yielding ``(root, members_set)`` pairs.
+
+        This performs one full iteration over all elements followed by one
+        ``find`` call per element (with path-compression side-effects).
+        Peak RAM usage is proportional to the number of distinct components,
+        not the total number of elements.
+
+        :return: Iterator of ``(root_str, set_of_member_strings)`` pairs.
+        """
+        # Group elements by root
+        components: dict[str, set] = {}
+        for key in self._data:
+            root = self.find(key)
+            if root not in components:
+                components[root] = set()
+            components[root].add(key)
+
+        yield from components.items()
+
+
+# Type alias for Union-Find implementations
+UnionFind = Union[LmdbUnionFind, InMemoryUnionFind]

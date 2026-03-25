@@ -27,7 +27,7 @@ from oc_validator.id_syntax import IdSyntax
 from oc_validator.id_existence import IdExistence
 from oc_validator.semantics import Semantics
 from oc_validator.table_reader import read_metadata_row, read_citations_row
-from oc_validator.lmdb_cache import LmdbCache, InMemoryCache, LmdbUnionFind
+from oc_validator.lmdb_cache import LmdbCache, InMemoryCache, LmdbUnionFind, InMemoryUnionFind, UnionFind
 from tqdm import tqdm
 from argparse import ArgumentParser
 import logging
@@ -61,7 +61,7 @@ class TableNotMatchingInstance(ValidationError):
 # --- Class for the main process; validates one document at a time via the Validator.validate() method. ---
 class Validator:
     def __init__(self, csv_doc: str, output_dir: str, use_meta_endpoint=False, verify_id_existence=True, 
-                 memory_efficient=True, cache_path=None):
+                 use_lmdb=False, cache_path=None):
         """
         Initialize the Validator.
         
@@ -69,7 +69,7 @@ class Validator:
         :param output_dir: Directory to store validation output
         :param use_meta_endpoint: Whether to use OC Meta endpoint for ID existence checks
         :param verify_id_existence: Whether to verify ID existence
-        :param memory_efficient: If True, use LMDB for caching (recommended for large files)
+        :param use_lmdb: If True, use LMDB for caching (recommended for large files)
         :param cache_path: Optional custom path for LMDB database
         """
         self.csv_doc = csv_doc
@@ -94,9 +94,9 @@ class Validator:
             self.output_fp_txt = self._make_output_filepath('cits_validation_summary', 'txt')
         
         # Initialize cache based on memory_efficient flag
-        self.memory_efficient = memory_efficient
+        self.memory_efficient = use_lmdb
         cache_name = f'validator_{hash(csv_doc)}'
-        if memory_efficient:
+        if use_lmdb:
             self.id_cache = LmdbCache(cache_name, path=cache_path)
         else:
             self.id_cache = InMemoryCache(cache_name, path=cache_path)
@@ -174,26 +174,45 @@ class Validator:
             elif self.table_to_process == 'cits_csv':
                 return self.validate_cits()
         finally:
-            if self.id_cache._is_open():
+            if self.id_cache._is_open:
                 self.id_cache.close()
 
 
     def _collect_meta_duplicate_data(self):
         """
-        First pass: Collect minimal data needed for duplicate detection.
+        First pass: Collect minimal data needed for duplicate detection in META-CSV.
 
-        Returns a tuple ``(LmdbCache, int)`` where the cache maps
-        ``str(row_idx)`` to the raw ``'id'`` field string and the integer is
-        the total row count.  The caller is responsible for closing the cache
-        when it is no longer needed.
+        Returns a tuple ``(UnionFind, Union[LmdbCache, InMemoryCache], int)`` where:
+        - UnionFind: Union-Find structure for grouping IDs into entities
+        - Cache: maps ``str(row_idx)`` to the raw ``'id'`` field string
+        - int: the total row count
+        
+        The caller is responsible for closing the cache and, if using LMDB,
+        cleaning up the temporary directory when they are no longer needed.
         """
-        dup_cache = LmdbCache(f'dup_meta_{abs(hash(self.csv_doc))}')
+        # Set up Union-Find based on memory_efficient flag
+        if self.memory_efficient:
+            uf_tmp_dir = tempfile.mkdtemp(prefix='uf_dup_meta_')
+            uf_env = lmdb.open(uf_tmp_dir, map_size=2 * 1024 ** 3, sync=False, metasync=False)
+            uf = LmdbUnionFind(uf_env)
+        else:
+            uf = InMemoryUnionFind()
+            uf_tmp_dir = None
+            uf_env = None
+        
+        # Set up cache based on memory_efficient flag
+        if self.memory_efficient:
+            dup_cache = LmdbCache(f'dup_meta_{abs(hash(self.csv_doc))}')
+        else:
+            dup_cache = InMemoryCache(f'dup_meta_{abs(hash(self.csv_doc))}')
         dup_cache.open()
+        
         row_count = 0
         for row_idx, row in enumerate(tqdm(self.csv_stream.stream(), desc="First pass: Collecting IDs")):
             dup_cache[str(row_idx)] = row.get('id', '')
             row_count += 1
-        return (dup_cache, row_count)
+        
+        return (uf, dup_cache, row_count, uf_tmp_dir, uf_env)
     
     def validate_meta(self) -> bool:
         """
@@ -203,17 +222,11 @@ class Validator:
         messages = self.messages
         id_type_dict = self.id_type_dict
 
-        # Set up LMDB Union-Find for entity grouping (replaces in-memory br_id_groups list)
-        uf_tmp_dir = tempfile.mkdtemp(prefix='uf_meta_')
-        uf_env = lmdb.open(uf_tmp_dir, map_size=2 * 1024 ** 3, sync=False, metasync=False)
-        uf = LmdbUnionFind(uf_env)
-        duplicate_data_cache = None
+        # First pass: Collect data for duplicate detection (gets Union-Find and cache)
+        uf, duplicate_data_cache, rows_count, uf_tmp_dir, uf_env = self._collect_meta_duplicate_data()
 
         # Open JSON-L file for streaming output
         with JSONLStreamIO(self.output_fp_json, 'a') as jsonl_file:
-            # First pass: Collect data for duplicate detection (LMDB-backed)
-            duplicate_data_cache, rows_count = self._collect_meta_duplicate_data()
-            
             # Second pass: Stream validation
             for row_idx, row in enumerate(tqdm(self.csv_stream.stream(), desc="Second pass: Validating", total=rows_count)):
                 row_ok = True  # switch for row well-formedness
@@ -705,9 +718,11 @@ class Validator:
             for error in duplicate_report:
                 jsonl_file.write(error)
 
-        # Cleanup LMDB resources used for duplicate detection
-        uf_env.close()
-        shutil.rmtree(uf_tmp_dir, ignore_errors=True)
+        # Cleanup resources used for duplicate detection
+        if uf_env is not None:
+            uf_env.close()
+        if uf_tmp_dir is not None:
+            shutil.rmtree(uf_tmp_dir, ignore_errors=True)
         if duplicate_data_cache is not None:
             duplicate_data_cache.close()
 
@@ -724,18 +739,37 @@ class Validator:
         """
         First pass: Collect minimal data needed for duplicate detection in CITS-CSV.
 
-        Returns a tuple ``(LmdbCache, int)`` where the cache maps
-        ``str(row_idx)`` to a ``(citing_id_str, cited_id_str)`` tuple and the
-        integer is the total row count.  The caller is responsible for closing
-        the cache when it is no longer needed.
+        Returns a tuple ``(UnionFind, Union[LmdbCache, InMemoryCache], int)`` where:
+        - UnionFind: Union-Find structure for grouping IDs into entities
+        - Cache: maps ``str(row_idx)`` to a ``(citing_id_str, cited_id_str)`` tuple
+        - int: total row count
+        
+        The caller is responsible for closing the cache and, if using LMDB,
+        cleaning up the temporary directory when it is no longer needed.
         """
-        dup_cache = LmdbCache(f'dup_cits_{abs(hash(self.csv_doc))}')
+        # Set up Union-Find based on memory_efficient flag
+        if self.memory_efficient:
+            uf_tmp_dir = tempfile.mkdtemp(prefix='uf_dup_cits_')
+            uf_env = lmdb.open(uf_tmp_dir, map_size=100 * 1024 * 1024, sync=False, metasync=False)
+            uf = LmdbUnionFind(uf_env)
+        else:
+            uf = InMemoryUnionFind()
+            uf_tmp_dir = None
+            uf_env = None
+        
+        # Set up cache based on memory_efficient flag
+        if self.memory_efficient:
+            dup_cache = LmdbCache(f'dup_cits_{abs(hash(self.csv_doc))}')
+        else:
+            dup_cache = InMemoryCache(f'dup_cits_{abs(hash(self.csv_doc))}')
         dup_cache.open()
+        
         row_count = 0
         for row_idx, row in enumerate(tqdm(self.csv_stream.stream(), desc="First pass: Collecting IDs")):
             dup_cache[str(row_idx)] = (row.get('citing_id', ''), row.get('cited_id', ''))
             row_count += 1
-        return (dup_cache, row_count)
+        
+        return (uf, dup_cache, row_count, uf_tmp_dir, uf_env)
 
     def validate_cits(self) -> bool:
         """
@@ -744,17 +778,11 @@ class Validator:
         """
         messages = self.messages
 
-        # Set up LMDB Union-Find for entity grouping (replaces in-memory id_fields_instances list)
-        uf_tmp_dir = tempfile.mkdtemp(prefix='uf_cits_')
-        uf_env = lmdb.open(uf_tmp_dir, map_size=100 * 1024 * 1024, sync=False, metasync=False)
-        uf = LmdbUnionFind(uf_env)
-        duplicate_data_cache = None
+        # First pass: Collect data for duplicate detection (gets Union-Find and cache)
+        uf, duplicate_data_cache, rows_count, uf_tmp_dir, uf_env = self._collect_cits_duplicate_data()
 
         # Open JSON-L file for streaming output
         with JSONLStreamIO(self.output_fp_json, 'a') as jsonl_file:
-            # First pass: Collect data for duplicate detection (LMDB-backed)
-            duplicate_data_cache, rows_count = self._collect_cits_duplicate_data()
-            
             # Second pass: Stream validation
             for row_idx, row in enumerate(tqdm(self.csv_stream.stream(), desc="Second pass: Validating", total=rows_count)):
                 # Parse row into structured object
@@ -883,9 +911,11 @@ class Validator:
             for error in duplicate_report:
                 jsonl_file.write(error)
 
-        # Cleanup LMDB resources used for duplicate detection
-        uf_env.close()
-        shutil.rmtree(uf_tmp_dir, ignore_errors=True)
+        # Cleanup resources used for duplicate detection
+        if uf_env is not None:
+            uf_env.close()
+        if uf_tmp_dir is not None:
+            shutil.rmtree(uf_tmp_dir, ignore_errors=True)
         if duplicate_data_cache is not None:
             duplicate_data_cache.close()
 
@@ -901,7 +931,7 @@ class Validator:
 
 class ClosureValidator:
 
-    def __init__(self, meta_csv_doc, meta_output_dir, cits_csv_doc, cits_output_dir, strict_sequenciality=False, meta_kwargs=None, cits_kwargs=None) -> None:
+    def __init__(self, meta_csv_doc, meta_output_dir, cits_csv_doc, cits_output_dir, strict_sequenciality=False, meta_kwargs=None, cits_kwargs=None, use_lmdb=False) -> None:
         self.meta_csv_doc = meta_csv_doc
         self.meta_output_dir = meta_output_dir
         self.cits_csv_doc = cits_csv_doc
@@ -912,7 +942,7 @@ class ClosureValidator:
         self.messages = full_load(open(join(script_dir, 'messages.yaml'), 'r', encoding='utf-8'))
 
         # Define default kwargs for optional configuration of the two instances of Validator
-        default_kwargs = {'use_meta_endpoint': False, 'verify_id_existence': True}
+        default_kwargs = {'use_meta_endpoint': False, 'verify_id_existence': True, 'use_lmdb': use_lmdb}
 
         # Merge user-provided kwargs with defaults
         meta_kwargs = {**default_kwargs, **(meta_kwargs or {})}
@@ -923,6 +953,7 @@ class ClosureValidator:
         self.cits_validator = Validator(self.cits_csv_doc, self.cits_output_dir, **cits_kwargs)
 
         self.helper = Helper()
+        self.memory_efficient = use_lmdb
 
         # Check if each of the two Validator instances is passed the expected table type
         if self.meta_validator.table_to_process != 'meta_csv':
@@ -949,15 +980,20 @@ class ClosureValidator:
 
     def check_closure(self) -> tuple[bool, bool]:
         """
-        Check transitive closure between META-CSV and CITS-CSV using LMDB-backed
+        Check transitive closure between META-CSV and CITS-CSV using memory-efficient
         structures throughout.  No large dicts or lists of sets are held in RAM.
 
-        Four LMDB resources are used:
-        - ``meta_uf`` / ``cits_uf``: Union-Find for grouping IDs into entities.
-        - ``meta_positions_cache`` / ``cits_positions_cache``: mapping each ID to
-          the list of position dicts where it appears in its respective table.
+        When memory_efficient=True (default):
+        - Two LMDB environments are used, each containing a Union-Find database
+          and a positions cache database
+        - ``meta_uf_env`` / ``meta_positions_cache``: META-CSV resources
+        - ``cits_uf_env`` / ``cits_positions_cache``: CITS-CSV resources
 
-        The closure check avoids building large Python sets by querying the LMDB
+        When memory_efficient=False:
+        - In-memory structures are used (InMemoryUnionFind + InMemoryCache pairs)
+        - Same interface and logic as LMDB version
+
+        The closure check avoids building large Python sets by querying the
         caches directly with O(1) ``__contains__`` lookups.
         """
         
@@ -965,20 +1001,37 @@ class ClosureValidator:
         meta_is_valid_closure = True
         cits_is_valid_closure = True
 
-        # --- Set up LMDB Union-Finds (entity grouping) ---
-        meta_uf_dir = tempfile.mkdtemp(prefix='uf_closure_meta_')
-        meta_uf_env = lmdb.open(meta_uf_dir, map_size=100 * 1024 * 1024, sync=False, metasync=False)
-        meta_uf = LmdbUnionFind(meta_uf_env)
+        # Initialize resource tracking for cleanup
+        meta_uf_dir = None
+        meta_uf_env = None
+        cits_uf_dir = None
+        cits_uf_env = None
 
-        cits_uf_dir = tempfile.mkdtemp(prefix='uf_closure_cits_')
-        cits_uf_env = lmdb.open(cits_uf_dir, map_size=100 * 1024 * 1024, sync=False, metasync=False)
-        cits_uf = LmdbUnionFind(cits_uf_env)
+        # --- Set up Union-Finds and position caches based on memory_efficient flag ---
+        if self.memory_efficient:
+            # --- Set up LMDB position caches (id -> list of position dicts) ---
+            meta_positions_cache = LmdbCache('closure_meta_positions')
+            meta_positions_cache.open()
+            cits_positions_cache = LmdbCache('closure_cits_positions')
+            cits_positions_cache.open()
 
-        # --- Set up LMDB position caches (id → list of position dicts) ---
-        meta_positions_cache = LmdbCache('closure_meta_positions')
-        meta_positions_cache.open()
-        cits_positions_cache = LmdbCache('closure_cits_positions')
-        cits_positions_cache.open()
+            # LMDB-backed resources
+            ms = meta_positions_cache.map_size  # use the same map_size value for UnionFind LMDB envs
+            meta_uf_dir = tempfile.mkdtemp(prefix='uf_closure_meta_')
+            meta_uf_env = lmdb.open(meta_uf_dir, map_size=ms, sync=False, metasync=False)
+            meta_uf = LmdbUnionFind(meta_uf_env)
+
+            cits_uf_dir = tempfile.mkdtemp(prefix='uf_closure_cits_')
+            cits_uf_env = lmdb.open(cits_uf_dir, map_size=ms, sync=False, metasync=False)
+            cits_uf = LmdbUnionFind(cits_uf_env)
+        else:
+            # In-memory resources
+            meta_uf = InMemoryUnionFind()
+            cits_uf = InMemoryUnionFind()
+            meta_positions_cache = InMemoryCache('closure_meta_positions')
+            meta_positions_cache.open()
+            cits_positions_cache = InMemoryCache('closure_cits_positions')
+            cits_positions_cache.open()
 
         try:
             # --- Collect entities and positions from META ---
@@ -1068,11 +1121,15 @@ class ClosureValidator:
                             cits_is_valid_closure = False
 
         finally:
-            # Cleanup all LMDB resources
-            meta_uf_env.close()
-            shutil.rmtree(meta_uf_dir, ignore_errors=True)
-            cits_uf_env.close()
-            shutil.rmtree(cits_uf_dir, ignore_errors=True)
+            # Cleanup resources based on memory_efficient flag
+            if meta_uf_env is not None:
+                meta_uf_env.close()
+            if meta_uf_dir is not None:
+                shutil.rmtree(meta_uf_dir, ignore_errors=True)
+            if cits_uf_env is not None:
+                cits_uf_env.close()
+            if cits_uf_dir is not None:
+                shutil.rmtree(cits_uf_dir, ignore_errors=True)
             meta_positions_cache.close()
             cits_positions_cache.close()
 
@@ -1122,21 +1179,20 @@ if __name__ == '__main__':
     parser.add_argument('-s', '--no-id-existence', dest='verify_id_existence', action='store_false',
                         help='Skip checking if IDs are registered somewhere, i.e. do not use Meta endpoint nor external APIs.',
                         required=False)
-    parser.add_argument('--memory-efficient', dest='memory_efficient', action='store_true', default=True,
-                        help='Use LMDB for efficient memory usage with large files (default: True). '
-                        'Set to False to use in-memory caching (faster but uses more RAM).',
-                        required=False)
+    parser.add_argument('--use-lmdb', dest='use_lmdb', action='store_true', 
+                        default=False, 
+                        help='Enable LMDB for efficient memory usage with large files (default: True).')
     parser.add_argument('--cache-path', dest='cache_path', type=str, default=None,
                         help='Optional custom path for LMDB database storage (default: ./storage/cache).',
                         required=False)
     args = parser.parse_args()
     v = Validator(
         args.input_csv, 
-        args.output_dir, 
-        args.use_meta_endpoint,
-        args.verify_id_existence,
-        args.memory_efficient,
-        args.cache_path,
+        args.output_dir,
+        use_meta_endpoint=args.use_meta_endpoint,
+        verify_id_existence=args.verify_id_existence,
+        use_lmdb=args.use_lmdb,
+        cache_path=args.cache_path,
     )
     v.validate()
 
@@ -1146,4 +1202,4 @@ if __name__ == '__main__':
 
 
 # FROM THE COMMAND LINE:
-# python -m oc_validator.main -i <input csv file path> -o <output dir path> [-m] [-s]
+# python -m oc_validator.main -i <input csv file path> -o <output dir path> [-m] [-s] [--use-lmdb [--cache-path]]
