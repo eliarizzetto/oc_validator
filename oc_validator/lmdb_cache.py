@@ -1,17 +1,3 @@
-# Copyright (c) 2023, OpenCitations <contact@opencitations.net>
-#
-# Permission to use, copy, modify, and/or distribute this software for any purpose
-# with or without fee is hereby granted, provided that the above copyright notice
-# and this permission notice appear in all copies.
-#
-# THE SOFTWARE IS PROVIDED "AS IS" AND THE AUTHOR DISCLAIMS ALL WARRANTIES WITH
-# REGARD TO THIS SOFTWARE INCLUDING ALL IMPLIED WARRANTIES OF MERCHANTABILITY AND
-# FITNESS. IN NO EVENT SHALL THE AUTHOR BE LIABLE FOR ANY SPECIAL, DIRECT, INDIRECT,
-# OR CONSEQUENTIAL DAMAGES OR ANY DAMAGES WHATSOEVER RESULTING FROM LOSS OF USE,
-# DATA OR PROFITS, WHETHER IN AN ACTION OF CONTRACT, NEGLIGENCE OR OTHER TORTIOUS
-# ACTION, ARISING OUT OF OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS
-# SOFTWARE.
-
 import lmdb
 import pickle
 import os
@@ -37,21 +23,21 @@ class LmdbCache:
         # Cache is automatically closed when exiting context
     """
     
-    def __init__(self, name: str, path: Optional[str] = None, max_size: int = 100 * 1024 * 1024):
+    def __init__(self, name: str, path: Optional[str] = None, map_size: int = 30 * 1024**3):
         """
         Initialize LMDB cache.
 
         :param name: Unique name for this cache (used in directory name)
         :param path: Optional custom path for LMDB database. If None, uses temp directory.
-        :param max_size: Maximum database size in bytes (default: 100 MB).
-            On Windows LMDB pre-allocates a file of exactly ``max_size`` bytes;
+        :param map_size: Maximum database size in bytes (default: 100 MB).
+            On Windows LMDB pre-allocates a file of exactly ``map_size`` bytes;
             on Linux/macOS it uses sparse files so actual disk usage equals only
             the data written.  Increase this value when processing files with
-            millions of unique IDs (e.g. ``max_size=512*1024*1024`` for 512 MB).
+            millions of unique IDs (e.g. ``map_size=20*1024**3`` for 20GB).
         """
         self.name = name
         self._env: Optional[lmdb.Environment] = None
-        self.max_size = max_size
+        self.map_size = int(os.getenv('LMDB_MAP_SIZE', str(map_size)))  # use env variable if specified, else default init value
         
         if path is None:
             # Create a temporary directory for the LMDB database
@@ -73,7 +59,7 @@ class LmdbCache:
         
         self._env = lmdb.open(
             self.path,
-            map_size=self.max_size,
+            map_size=self.map_size,
             max_dbs=1,  # Allow one sub-database if needed
             writemap=False,  # Use write-through for durability
             metasync=False,   # Flush metadata asynchronously for speed

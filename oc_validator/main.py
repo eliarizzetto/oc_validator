@@ -168,10 +168,15 @@ class Validator:
         return full_path
 
     def validate(self) -> bool:
-        if self.table_to_process == 'meta_csv':
-            return self.validate_meta()
-        elif self.table_to_process == 'cits_csv':
-            return self.validate_cits()
+        try:
+            if self.table_to_process == 'meta_csv':
+                return self.validate_meta()
+            elif self.table_to_process == 'cits_csv':
+                return self.validate_cits()
+        finally:
+            if self.id_cache._is_open():
+                self.id_cache.close()
+
 
     def _collect_meta_duplicate_data(self):
         """
@@ -955,6 +960,8 @@ class ClosureValidator:
         The closure check avoids building large Python sets by querying the LMDB
         caches directly with O(1) ``__contains__`` lookups.
         """
+        
+        print('Checking transitive closure between metadata and citations...')
         meta_is_valid_closure = True
         cits_is_valid_closure = True
 
@@ -1092,9 +1099,10 @@ class ClosureValidator:
         cits_is_valid = self.cits_validator.validate()
 
         # in case some errors have already been found and strict_sequentiality is True, don't run the check on closure
-        if self.strict_sequentiality and (not meta_is_valid or not cits_is_valid):
-            print('The separate validation of the metadata (META-CSV) and citations (CITS-CSV) tables already detected some error (in one or both documents).',
-                  'Skipping the check of transitive closure as strict_sequentiality==True.')
+        if self.strict_sequentiality:
+            if not meta_is_valid or not cits_is_valid:
+                print('The separate validation of the metadata (META-CSV) and citations (CITS-CSV) tables already detected some error (in one or both documents).')
+            print('Skipping the check of transitive closure as strict_sequentiality==True.')
             return (meta_is_valid, cits_is_valid) 
         
         # Run validation for transitive closure
