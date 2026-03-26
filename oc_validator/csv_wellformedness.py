@@ -15,10 +15,10 @@
 from re import match, search, sub
 from roman import fromRoman, InvalidRomanNumeralError
 from oc_validator.helper import Helper
-from oc_validator.lmdb_cache import LmdbCache, LmdbUnionFind
+from oc_validator.lmdb_cache import LmdbCache, LmdbUnionFind, InMemoryCache, InMemoryUnionFind
 from json import load
 from os.path import join, dirname, abspath
-from typing import Generator
+from typing import Generator, Union
 
 
 class Wellformedness:
@@ -396,24 +396,32 @@ class Wellformedness:
     #                                               table=table))
     #     return report
 
-    def get_duplicates_cits(self, uf: LmdbUnionFind, data_cache: LmdbCache, messages) -> Generator:
+    def get_duplicates_cits(self, uf: Union[LmdbUnionFind,InMemoryUnionFind], data_cache: Union[LmdbCache, InMemoryCache], messages) -> Generator:
         """
         Find duplicate citations and self-citations in CITS-CSV using LMDB-backed storage.
 
         No large structures are held in RAM: the citation-occurrence map is
-        persisted in a temporary ``LmdbCache`` and iterated at the end to
+        persisted in a temporary cache and iterated at the end to
         detect duplicates.
 
-        :param uf: ``LmdbUnionFind`` populated with all well-formed IDs
+        :param uf: ``LmdbUnionFind`` or ``InMemoryUnionFind`` (same API) populated with all well-formed IDs
             encountered during the second validation pass.
-        :param data_cache: ``LmdbCache`` mapping ``str(row_idx)`` to a
+        :param data_cache: ``LmdbCache`` or ``InMemoryCache`` (same API) mapping ``str(row_idx)`` to a
             ``(citing_id_str, cited_id_str)`` tuple for every row.
         :param messages: Error-message template dict (from messages.yaml).
         :return: Generator of error-dict objects (same format as before).
         """
         # citation_map_cache: key = "citing_root\x00cited_root",
         #                     value = {row_idx: {'citing_id': [...], 'cited_id': [...]}}
-        with LmdbCache('dup_cits_citation_map') as citation_map_cache:
+
+        # Infer  from the type of data_cache whether to use an in-memory 
+        # object or an LMDB cache to collect duplicate issues positions
+        if isinstance(data_cache, InMemoryCache):
+            res_caching = InMemoryCache
+        else:
+            res_caching = LmdbCache
+
+        with res_caching('dup_cits_citation_map') as citation_map_cache:
             for str_idx, (citing_id, cited_id) in data_cache.items():
                 row_idx = int(str_idx)
                 citing_items = citing_id.split(' ')
@@ -522,7 +530,7 @@ class Wellformedness:
 
     #     return report
 
-    def get_duplicates_meta(self, uf: LmdbUnionFind, data_cache: LmdbCache, messages) -> Generator:
+    def get_duplicates_meta(self, uf: Union[LmdbUnionFind, InMemoryUnionFind], data_cache: Union[LmdbCache, InMemoryCache], messages) -> Generator:
         """
         Find duplicate bibliographic entities in META-CSV using LMDB-backed storage.
 
@@ -539,7 +547,15 @@ class Wellformedness:
         """
         # meta_map_cache: key = entity root string,
         #                 value = {row_idx: {'id': [0, 1, ...]}}
-        with LmdbCache('dup_meta_entity_map') as meta_map_cache:
+
+        # Infer  from the type of data_cache whether to use an in-memory 
+        # object or an LMDB cache to collect duplicate issues positions
+        if isinstance(data_cache, InMemoryCache):
+            res_caching = InMemoryCache
+        else:
+            res_caching = LmdbCache
+
+        with res_caching('dup_meta_entity_map') as meta_map_cache:
             for str_idx, id_value in data_cache.items():
                 row_idx = int(str_idx)
                 items = id_value.split(' ')
@@ -554,7 +570,7 @@ class Wellformedness:
                 row_table = {row_idx: {'id': list(range(len(items)))}}
 
                 # Read-modify-write: accumulate occurrences per entity root
-                existing = meta_map_cache.get(root)
+                existing:dict = meta_map_cache.get(root)
                 if existing is None:
                     meta_map_cache[root] = row_table
                 else:
