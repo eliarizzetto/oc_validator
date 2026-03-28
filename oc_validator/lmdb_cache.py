@@ -23,13 +23,13 @@ class LmdbCache:
         # Cache is automatically closed when exiting context
     """
     
-    def __init__(self, name: str, path: Optional[str] = None, map_size: int = 30 * 1024**3):
+    def __init__(self, name: str, path: Optional[str] = None, map_size: int = 50 * 1024**3):
         """
         Initialize LMDB cache.
 
         :param name: Unique name for this cache (used in directory name)
         :param path: Optional custom path for LMDB database. If None, uses temp directory.
-        :param map_size: Maximum database size in bytes (default: 100 MB).
+        :param map_size: Maximum database size in bytes.
             On Windows LMDB pre-allocates a file of exactly ``map_size`` bytes;
             on Linux/macOS it uses sparse files so actual disk usage equals only
             the data written.  Increase this value when processing files with

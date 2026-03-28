@@ -97,7 +97,8 @@ class Validator:
         self.memory_efficient = use_lmdb
         cache_name = f'validator_{hash(csv_doc)}'
         if use_lmdb:
-            self.id_cache = LmdbCache(cache_name, path=cache_path)
+            self.map_size = 50 * 1024 ** 3  # 50 GB, adjust as needed. Used for all LMDB caches.
+            self.id_cache = LmdbCache(cache_name, path=cache_path, map_size=self.map_size)
         else:
             self.id_cache = InMemoryCache(cache_name, path=cache_path)
         
@@ -193,7 +194,7 @@ class Validator:
         # Set up Union-Find based on memory_efficient flag
         if self.memory_efficient:
             uf_tmp_dir = tempfile.mkdtemp(prefix='uf_dup_meta_', dir='.')
-            uf_env = lmdb.open(uf_tmp_dir, map_size=2 * 1024 ** 3, sync=False, metasync=False)
+            uf_env = lmdb.open(uf_tmp_dir, map_size=self.map_size, sync=False, metasync=False)
             uf = LmdbUnionFind(uf_env)
         else:
             uf = InMemoryUnionFind()
@@ -202,7 +203,7 @@ class Validator:
         
         # Set up cache based on memory_efficient flag
         if self.memory_efficient:
-            dup_cache = LmdbCache(f'dup_meta_{abs(hash(self.csv_doc))}')
+            dup_cache = LmdbCache(f'dup_meta_{abs(hash(self.csv_doc))}', map_size=self.map_size)
         else:
             dup_cache = InMemoryCache(f'dup_meta_{abs(hash(self.csv_doc))}')
         dup_cache.open()
@@ -750,7 +751,7 @@ class Validator:
         # Set up Union-Find based on memory_efficient flag
         if self.memory_efficient:
             uf_tmp_dir = tempfile.mkdtemp(prefix='uf_dup_cits_', dir='.')
-            uf_env = lmdb.open(uf_tmp_dir, map_size=100 * 1024 * 1024, sync=False, metasync=False)
+            uf_env = lmdb.open(uf_tmp_dir, map_size=self.map_size, sync=False, metasync=False)
             uf = LmdbUnionFind(uf_env)
         else:
             uf = InMemoryUnionFind()
@@ -759,7 +760,7 @@ class Validator:
         
         # Set up cache based on memory_efficient flag
         if self.memory_efficient:
-            dup_cache = LmdbCache(f'dup_cits_{abs(hash(self.csv_doc))}')
+            dup_cache = LmdbCache(f'dup_cits_{abs(hash(self.csv_doc))}', map_size=self.map_size)
         else:
             dup_cache = InMemoryCache(f'dup_cits_{abs(hash(self.csv_doc))}')
         dup_cache.open()
@@ -1010,19 +1011,18 @@ class ClosureValidator:
         # --- Set up Union-Finds and position caches based on memory_efficient flag ---
         if self.memory_efficient:
             # --- Set up LMDB position caches (id -> list of position dicts) ---
-            meta_positions_cache = LmdbCache('closure_meta_positions')
+            meta_positions_cache = LmdbCache('closure_meta_positions', map_size=self.meta_validator.map_size)
             meta_positions_cache.open()
-            cits_positions_cache = LmdbCache('closure_cits_positions')
+            cits_positions_cache = LmdbCache('closure_cits_positions', map_size=self.cits_validator.map_size)
             cits_positions_cache.open()
 
             # LMDB-backed resources
-            ms = meta_positions_cache.map_size  # use the same map_size value for UnionFind LMDB envs
             meta_uf_dir = tempfile.mkdtemp(prefix='uf_closure_meta_', dir='.')
-            meta_uf_env = lmdb.open(meta_uf_dir, map_size=ms, sync=False, metasync=False)
+            meta_uf_env = lmdb.open(meta_uf_dir, map_size=self.meta_validator.map_size, sync=False, metasync=False)
             meta_uf = LmdbUnionFind(meta_uf_env)
 
             cits_uf_dir = tempfile.mkdtemp(prefix='uf_closure_cits_', dir='.')
-            cits_uf_env = lmdb.open(cits_uf_dir, map_size=ms, sync=False, metasync=False)
+            cits_uf_env = lmdb.open(cits_uf_dir, map_size=self.cits_validator.map_size, sync=False, metasync=False)
             cits_uf = LmdbUnionFind(cits_uf_env)
         else:
             # In-memory resources
