@@ -192,7 +192,7 @@ class Validator:
         """
         # Set up Union-Find based on memory_efficient flag
         if self.memory_efficient:
-            uf_tmp_dir = tempfile.mkdtemp(prefix='uf_dup_meta_')
+            uf_tmp_dir = tempfile.mkdtemp(prefix='uf_dup_meta_', dir='.')
             uf_env = lmdb.open(uf_tmp_dir, map_size=2 * 1024 ** 3, sync=False, metasync=False)
             uf = LmdbUnionFind(uf_env)
         else:
@@ -749,7 +749,7 @@ class Validator:
         """
         # Set up Union-Find based on memory_efficient flag
         if self.memory_efficient:
-            uf_tmp_dir = tempfile.mkdtemp(prefix='uf_dup_cits_')
+            uf_tmp_dir = tempfile.mkdtemp(prefix='uf_dup_cits_', dir='.')
             uf_env = lmdb.open(uf_tmp_dir, map_size=100 * 1024 * 1024, sync=False, metasync=False)
             uf = LmdbUnionFind(uf_env)
         else:
@@ -1017,11 +1017,11 @@ class ClosureValidator:
 
             # LMDB-backed resources
             ms = meta_positions_cache.map_size  # use the same map_size value for UnionFind LMDB envs
-            meta_uf_dir = tempfile.mkdtemp(prefix='uf_closure_meta_')
+            meta_uf_dir = tempfile.mkdtemp(prefix='uf_closure_meta_', dir='.')
             meta_uf_env = lmdb.open(meta_uf_dir, map_size=ms, sync=False, metasync=False)
             meta_uf = LmdbUnionFind(meta_uf_env)
 
-            cits_uf_dir = tempfile.mkdtemp(prefix='uf_closure_cits_')
+            cits_uf_dir = tempfile.mkdtemp(prefix='uf_closure_cits_', dir='.')
             cits_uf_env = lmdb.open(cits_uf_dir, map_size=ms, sync=False, metasync=False)
             cits_uf = LmdbUnionFind(cits_uf_env)
         else:

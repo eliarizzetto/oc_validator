@@ -41,7 +41,7 @@ class LmdbCache:
         
         if path is None:
             # Create a temporary directory for the LMDB database
-            self._temp_dir = tempfile.mkdtemp(prefix=f'lmdb_{name}_')
+            self._temp_dir = tempfile.mkdtemp(prefix=f'lmdb_{name}_', dir='.')
             self.path = os.path.join(self._temp_dir, 'cache')
         else:
             self._temp_dir = None
