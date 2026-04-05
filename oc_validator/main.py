@@ -60,17 +60,18 @@ class TableNotMatchingInstance(ValidationError):
 
 # --- Class for the main process; validates one document at a time via the Validator.validate() method. ---
 class Validator:
-    def __init__(self, csv_doc: str, output_dir: str, use_meta_endpoint=False, verify_id_existence=True, 
-                 use_lmdb=False, cache_path=None):
+    def __init__(self, csv_doc: str, output_dir: str, use_meta_endpoint=False, verify_id_existence=True,
+                 use_lmdb=False, map_size: int = 1 * 1024**3, cache_dir: str = None):
         """
         Initialize the Validator.
-        
+
         :param csv_doc: Path to the CSV file to validate
         :param output_dir: Directory to store validation output
         :param use_meta_endpoint: Whether to use OC Meta endpoint for ID existence checks
         :param verify_id_existence: Whether to verify ID existence
         :param use_lmdb: If True, use LMDB for caching (recommended for large files)
-        :param cache_path: Optional custom path for LMDB database
+        :param map_size: Maximum size in bytes for each LMDB environment (default 1 GB)
+        :param cache_dir: Optional base directory under which all LMDB caches are created
         """
         self.csv_doc = csv_doc
         self.csv_stream = CSVStreamReader(csv_doc)  # Use streaming instead of loading all data
@@ -97,12 +98,19 @@ class Validator:
         
         # Initialize cache based on memory_efficient flag
         self.memory_efficient = use_lmdb
+        self.map_size = map_size
+        self._cache_dir = cache_dir
+        if cache_dir:
+            makedirs(cache_dir, exist_ok=True)
+
         cache_name = f'validator_{hash(csv_doc)}'
         if use_lmdb:
-            self.map_size = 50 * 1024 ** 3  # 50 GB, adjust as needed. Used for all LMDB caches.
-            self.id_cache = LmdbCache(cache_name, path=cache_path, map_size=self.map_size)
+            if cache_dir:
+                self.id_cache = LmdbCache(cache_name, path=join(cache_dir, cache_name), map_size=self.map_size)
+            else:
+                self.id_cache = LmdbCache(cache_name, map_size=self.map_size)
         else:
-            self.id_cache = InMemoryCache(cache_name, path=cache_path)
+            self.id_cache = InMemoryCache(cache_name)
         
         # Open the cache
         self.id_cache.open()
@@ -208,19 +216,24 @@ class Validator:
         """
         # Set up Union-Find based on memory_efficient flag
         if self.memory_efficient:
-            uf_tmp_dir = tempfile.mkdtemp(prefix='uf_dup_meta_', dir='.')
+            tmp_base = self._cache_dir or '.'
+            uf_tmp_dir = tempfile.mkdtemp(prefix='uf_dup_meta_', dir=tmp_base)
             uf_env = lmdb.open(uf_tmp_dir, map_size=self.map_size, sync=False, metasync=False)
             uf = LmdbUnionFind(uf_env)
         else:
             uf = InMemoryUnionFind()
             uf_tmp_dir = None
             uf_env = None
-        
+
         # Set up cache based on memory_efficient flag
+        dup_cache_name = f'dup_meta_{abs(hash(self.csv_doc))}'
         if self.memory_efficient:
-            dup_cache = LmdbCache(f'dup_meta_{abs(hash(self.csv_doc))}', map_size=self.map_size)
+            if self._cache_dir:
+                dup_cache = LmdbCache(dup_cache_name, path=join(self._cache_dir, dup_cache_name), map_size=self.map_size)
+            else:
+                dup_cache = LmdbCache(dup_cache_name, map_size=self.map_size)
         else:
-            dup_cache = InMemoryCache(f'dup_meta_{abs(hash(self.csv_doc))}')
+            dup_cache = InMemoryCache(dup_cache_name)
         dup_cache.open()
         
         row_count = 0
@@ -763,19 +776,24 @@ class Validator:
         """
         # Set up Union-Find based on memory_efficient flag
         if self.memory_efficient:
-            uf_tmp_dir = tempfile.mkdtemp(prefix='uf_dup_cits_', dir='.')
+            tmp_base = self._cache_dir or '.'
+            uf_tmp_dir = tempfile.mkdtemp(prefix='uf_dup_cits_', dir=tmp_base)
             uf_env = lmdb.open(uf_tmp_dir, map_size=self.map_size, sync=False, metasync=False)
             uf = LmdbUnionFind(uf_env)
         else:
             uf = InMemoryUnionFind()
             uf_tmp_dir = None
             uf_env = None
-        
+
         # Set up cache based on memory_efficient flag
+        dup_cache_name = f'dup_cits_{abs(hash(self.csv_doc))}'
         if self.memory_efficient:
-            dup_cache = LmdbCache(f'dup_cits_{abs(hash(self.csv_doc))}', map_size=self.map_size)
+            if self._cache_dir:
+                dup_cache = LmdbCache(dup_cache_name, path=join(self._cache_dir, dup_cache_name), map_size=self.map_size)
+            else:
+                dup_cache = LmdbCache(dup_cache_name, map_size=self.map_size)
         else:
-            dup_cache = InMemoryCache(f'dup_cits_{abs(hash(self.csv_doc))}')
+            dup_cache = InMemoryCache(dup_cache_name)
         dup_cache.open()
         
         row_count = 0
@@ -945,7 +963,7 @@ class Validator:
 
 class ClosureValidator:
 
-    def __init__(self, meta_csv_doc, meta_output_dir, cits_csv_doc, cits_output_dir, strict_sequentiality=False, meta_kwargs=None, cits_kwargs=None, use_lmdb=False) -> None:
+    def __init__(self, meta_csv_doc, meta_output_dir, cits_csv_doc, cits_output_dir, strict_sequentiality=False, meta_kwargs=None, cits_kwargs=None, use_lmdb=False, map_size: int = 1 * 1024**3, cache_dir: str = None) -> None:
         self.meta_csv_doc = meta_csv_doc
         self.meta_output_dir = meta_output_dir
         self.cits_csv_doc = cits_csv_doc
@@ -957,7 +975,7 @@ class ClosureValidator:
             self.messages = full_load(fm)
 
         # Define default kwargs for optional configuration of the two instances of Validator
-        default_kwargs = {'use_meta_endpoint': False, 'verify_id_existence': True, 'use_lmdb': use_lmdb}
+        default_kwargs = {'use_meta_endpoint': False, 'verify_id_existence': True, 'use_lmdb': use_lmdb, 'map_size': map_size, 'cache_dir': cache_dir}
 
         # Merge user-provided kwargs with defaults
         meta_kwargs = {**default_kwargs, **(meta_kwargs or {})}
@@ -1011,8 +1029,13 @@ class ClosureValidator:
 
         # Only position caches are created here
         if self.memory_efficient:
-            meta_positions_cache = LmdbCache('closure_meta_positions', map_size=self.meta_validator.map_size)
-            cits_positions_cache = LmdbCache('closure_cits_positions', map_size=self.cits_validator.map_size)
+            cache_base = self.meta_validator._cache_dir
+            if cache_base:
+                meta_positions_cache = LmdbCache('closure_meta_positions', path=join(cache_base, 'closure_meta_positions'), map_size=self.meta_validator.map_size)
+                cits_positions_cache = LmdbCache('closure_cits_positions', path=join(cache_base, 'closure_cits_positions'), map_size=self.cits_validator.map_size)
+            else:
+                meta_positions_cache = LmdbCache('closure_meta_positions', map_size=self.meta_validator.map_size)
+                cits_positions_cache = LmdbCache('closure_cits_positions', map_size=self.cits_validator.map_size)
         else:
             meta_positions_cache = InMemoryCache('closure_meta_positions')
             cits_positions_cache = InMemoryCache('closure_cits_positions')
@@ -1155,17 +1178,21 @@ if __name__ == '__main__':
     parser.add_argument('--use-lmdb', dest='use_lmdb', action='store_true', 
                         default=False, 
                         help='Enable LMDB for efficient memory usage with large files (default: True).')
-    parser.add_argument('--cache-path', dest='cache_path', type=str, default=None,
-                        help='Optional custom path for LMDB database storage (default: ./storage/cache).',
+    parser.add_argument('--map-size', dest='map_size', type=int, default=1,
+                        help='LMDB map size in GiB (default: 1).',
+                        required=False)
+    parser.add_argument('--cache-dir', dest='cache_dir', type=str, default=None,
+                        help='Base directory under which all LMDB caches are created.',
                         required=False)
     args = parser.parse_args()
     v = Validator(
-        args.input_csv, 
+        args.input_csv,
         args.output_dir,
         use_meta_endpoint=args.use_meta_endpoint,
         verify_id_existence=args.verify_id_existence,
         use_lmdb=args.use_lmdb,
-        cache_path=args.cache_path,
+        map_size=args.map_size * 1024**3,
+        cache_dir=args.cache_dir,
     )
     v.validate()
 
@@ -1175,4 +1202,4 @@ if __name__ == '__main__':
 
 
 # FROM THE COMMAND LINE:
-# python -m oc_validator.main -i <input csv file path> -o <output dir path> [-m] [-s] [--use-lmdb [--cache-path]]
+# python -m oc_validator.main -i <input csv file path> -o <output dir path> [-m] [-s] [--use-lmdb [--cache-dir <dir>] [--map-size <GiB>]]

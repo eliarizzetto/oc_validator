@@ -23,7 +23,7 @@ class LmdbCache:
         # Cache is automatically closed when exiting context
     """
     
-    def __init__(self, name: str, path: Optional[str] = None, map_size: int = 50 * 1024**3):
+    def __init__(self, name: str, path: Optional[str] = None, map_size: int = 1 * 1024**3):
         """
         Initialize LMDB cache.
 
