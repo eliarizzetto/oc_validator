@@ -108,6 +108,10 @@ class Validator:
         self.id_cache.open()
         
         self.verify_id_existence = verify_id_existence
+        self._uf = None
+        self._uf_env = None
+        self._uf_tmp_dir = None
+        self.duplicate_data_cache = None
     
     def __enter__(self):
         """Context manager entry."""
@@ -122,6 +126,15 @@ class Validator:
         """Close the cache and clean up resources."""
         if hasattr(self, 'id_cache') and self.id_cache is not None:
             self.id_cache.close()
+        if hasattr(self, '_uf_env') and self._uf_env is not None:
+            self._uf_env.close()
+            self._uf_env = None
+        if hasattr(self, '_uf_tmp_dir') and self._uf_tmp_dir is not None:
+            shutil.rmtree(self._uf_tmp_dir, ignore_errors=True)
+            self._uf_tmp_dir = None
+        if hasattr(self, 'duplicate_data_cache') and self.duplicate_data_cache is not None:
+            self.duplicate_data_cache.close()
+            self.duplicate_data_cache = None
 
     def process_selector(self):
         """
@@ -212,9 +225,18 @@ class Validator:
         
         row_count = 0
         for row_idx, row in enumerate(tqdm(self.csv_stream.stream(), desc="First pass: Collecting IDs")):
-            dup_cache[str(row_idx)] = row.get('id', '')
+            id_value = row.get('id', '')
+            dup_cache[str(row_idx)] = id_value
             row_count += 1
-        
+            # Populate UF with ALL non-empty IDs (for both duplicate detection and closure)
+            if id_value:
+                items = id_value.split(' ')
+                non_empty = [i for i in items if i]
+                if non_empty:
+                    uf.find(non_empty[0])
+                    for _i in range(1, len(non_empty)):
+                        uf.union(non_empty[0], non_empty[_i])
+
         return (uf, dup_cache, row_count, uf_tmp_dir, uf_env)
     
     def validate_meta(self) -> bool:
@@ -227,6 +249,10 @@ class Validator:
 
         # First pass: Collect data for duplicate detection (gets Union-Find and cache)
         uf, duplicate_data_cache, rows_count, uf_tmp_dir, uf_env = self._collect_meta_duplicate_data()
+        self._uf = uf
+        self._uf_tmp_dir = uf_tmp_dir
+        self._uf_env = uf_env
+        self.duplicate_data_cache = duplicate_data_cache
 
         # Open JSON-L file for streaming output
         with JSONLStreamIO(self.output_fp_json, 'a') as jsonl_file:
@@ -337,13 +363,6 @@ class Validator:
                                                                                 located_in='item',
                                                                                 table=table, valid=True)
                                                 jsonl_file.write(error)
-
-                            if len(br_ids_set) >= 1:
-                                # Register IDs in LMDB Union-Find (replaces in-memory br_id_groups list)
-                                ids_list = list(br_ids_set)
-                                uf.find(ids_list[0])  # ensure single-member entities are registered
-                                for _ui in range(1, len(ids_list)):
-                                    uf.union(ids_list[0], ids_list[_ui])
 
                             if len(br_ids_set) != len(items):  # --> some well-formedness error occurred in the id field
                                 id_ok = False
@@ -721,14 +740,6 @@ class Validator:
             for error in duplicate_report:
                 jsonl_file.write(error)
 
-        # Cleanup resources used for duplicate detection
-        if uf_env is not None:
-            uf_env.close()
-        if uf_tmp_dir is not None:
-            shutil.rmtree(uf_tmp_dir, ignore_errors=True)
-        if duplicate_data_cache is not None:
-            duplicate_data_cache.close()
-
         # write human-readable validation summary to txt file
         textual_report_stream= self.helper.create_validation_summary_stream(self.output_fp_json)
         with open(self.output_fp_txt, 'w', encoding='utf-8') as f:
@@ -769,9 +780,20 @@ class Validator:
         
         row_count = 0
         for row_idx, row in enumerate(tqdm(self.csv_stream.stream(), desc="First pass: Collecting IDs")):
-            dup_cache[str(row_idx)] = (row.get('citing_id', ''), row.get('cited_id', ''))
+            citing_id = row.get('citing_id', '')
+            cited_id = row.get('cited_id', '')
+            dup_cache[str(row_idx)] = (citing_id, cited_id)
             row_count += 1
-        
+            # Populate UF with ALL non-empty IDs from each field separately
+            for id_value in (citing_id, cited_id):
+                if id_value:
+                    items = id_value.split(' ')
+                    non_empty = [i for i in items if i]
+                    if non_empty:
+                        uf.find(non_empty[0])
+                        for _i in range(1, len(non_empty)):
+                            uf.union(non_empty[0], non_empty[_i])
+
         return (uf, dup_cache, row_count, uf_tmp_dir, uf_env)
 
     def validate_cits(self) -> bool:
@@ -783,6 +805,10 @@ class Validator:
 
         # First pass: Collect data for duplicate detection (gets Union-Find and cache)
         uf, duplicate_data_cache, rows_count, uf_tmp_dir, uf_env = self._collect_cits_duplicate_data()
+        self._uf = uf
+        self._uf_tmp_dir = uf_tmp_dir
+        self._uf_env = uf_env
+        self.duplicate_data_cache = duplicate_data_cache
 
         # Open JSON-L file for streaming output
         with JSONLStreamIO(self.output_fp_json, 'a') as jsonl_file:
@@ -888,13 +914,6 @@ class Validator:
                                                                                 table=table, valid=True)
                                                 jsonl_file.write(error)
 
-                            if len(ids_set) >= 1:
-                                # Register IDs in LMDB Union-Find (replaces in-memory id_fields_instances list)
-                                ids_list = list(ids_set)
-                                uf.find(ids_list[0])  # ensure single-member entities are registered
-                                for _ui in range(1, len(ids_list)):
-                                    uf.union(ids_list[0], ids_list[_ui])
-
                     if field == 'citing_publication_date' or field == 'cited_publication_date':
                         if value:
                             if not self.wellformed.wellformedness_date(value):
@@ -913,14 +932,6 @@ class Validator:
                 uf=uf, data_cache=duplicate_data_cache, messages=messages)
             for error in duplicate_report:
                 jsonl_file.write(error)
-
-        # Cleanup resources used for duplicate detection
-        if uf_env is not None:
-            uf_env.close()
-        if uf_tmp_dir is not None:
-            shutil.rmtree(uf_tmp_dir, ignore_errors=True)
-        if duplicate_data_cache is not None:
-            duplicate_data_cache.close()
 
         # write human-readable validation summary to txt file
         textual_report_stream= self.helper.create_validation_summary_stream(self.output_fp_json)
@@ -984,70 +995,39 @@ class ClosureValidator:
 
     def check_closure(self) -> tuple[bool, bool]:
         """
-        Check transitive closure between META-CSV and CITS-CSV using memory-efficient
-        structures throughout.  No large dicts or lists of sets are held in RAM.
-
-        When memory_efficient=True (default):
-        - Two LMDB environments are used, each containing a Union-Find database
-          and a positions cache database
-        - ``meta_uf_env`` / ``meta_positions_cache``: META-CSV resources
-        - ``cits_uf_env`` / ``cits_positions_cache``: CITS-CSV resources
-
-        When memory_efficient=False:
-        - In-memory structures are used (InMemoryUnionFind + InMemoryCache pairs)
-        - Same interface and logic as LMDB version
-
-        The closure check avoids building large Python sets by querying the
-        caches directly with O(1) ``__contains__`` lookups.
+        Check transitive closure between META-CSV and CITS-CSV.
+        Reuses the Union-Finds populated during pass 1.
+        Only position caches are built here (from the stored data caches).
         """
-        
         print('Checking transitive closure between metadata and citations...')
         meta_is_valid_closure = True
         cits_is_valid_closure = True
 
-        # Initialize resource tracking for cleanup
-        meta_uf_dir = None
-        meta_uf_env = None
-        cits_uf_dir = None
-        cits_uf_env = None
+        # Reuse UFs and data caches from pass 1
+        meta_uf = self.meta_validator._uf
+        cits_uf = self.cits_validator._uf
+        meta_cache = self.meta_validator.duplicate_data_cache
+        cits_cache = self.cits_validator.duplicate_data_cache
 
-        # --- Set up Union-Finds and position caches based on memory_efficient flag ---
+        # Only position caches are created here
         if self.memory_efficient:
-            # --- Set up LMDB position caches (id -> list of position dicts) ---
             meta_positions_cache = LmdbCache('closure_meta_positions', map_size=self.meta_validator.map_size)
-            meta_positions_cache.open()
             cits_positions_cache = LmdbCache('closure_cits_positions', map_size=self.cits_validator.map_size)
-            cits_positions_cache.open()
-
-            # LMDB-backed resources
-            meta_uf_dir = tempfile.mkdtemp(prefix='uf_closure_meta_', dir='.')
-            meta_uf_env = lmdb.open(meta_uf_dir, map_size=self.meta_validator.map_size, sync=False, metasync=False)
-            meta_uf = LmdbUnionFind(meta_uf_env)
-
-            cits_uf_dir = tempfile.mkdtemp(prefix='uf_closure_cits_', dir='.')
-            cits_uf_env = lmdb.open(cits_uf_dir, map_size=self.cits_validator.map_size, sync=False, metasync=False)
-            cits_uf = LmdbUnionFind(cits_uf_env)
         else:
-            # In-memory resources
-            meta_uf = InMemoryUnionFind()
-            cits_uf = InMemoryUnionFind()
             meta_positions_cache = InMemoryCache('closure_meta_positions')
-            meta_positions_cache.open()
             cits_positions_cache = InMemoryCache('closure_cits_positions')
-            cits_positions_cache.open()
+        meta_positions_cache.open()
+        cits_positions_cache.open()
 
         try:
-            # --- Collect entities and positions from META ---
-            for row_idx, row in enumerate(self.meta_validator.csv_stream.stream()):
-                row_obj = read_metadata_row(row)
-                if row_obj.id:
-                    ids = row_obj.id
-                    ids_unique = list(set(i for i in ids if i)) # filter out empty strings
-                    # Register / union all IDs in LMDB Union-Find
-                    meta_uf.find(ids_unique[0])
-                    for _i in range(1, len(ids_unique)):
-                        meta_uf.union(ids_unique[0], ids_unique[_i])
-                    # Record position for each unique ID (read-modify-write)
+            # --- Build position cache from META data cache ---
+            for str_idx, id_value in meta_cache.items():
+                row_idx = int(str_idx)
+                if id_value:
+                    ids = id_value.split(' ')
+                    ids_unique = list(set(i for i in ids if i))
+                    if not ids_unique:
+                        continue
                     pos_entry = {row_idx: {'id': list(range(len(ids)))}}
                     for item in ids_unique:
                         existing = meta_positions_cache.get(item)
@@ -1057,19 +1037,18 @@ class ClosureValidator:
                             existing.append(pos_entry)
                             meta_positions_cache[item] = existing
 
-            # --- Collect entities and positions from CITS-CSV ---
-            for row_idx, row in enumerate(self.cits_validator.csv_stream.stream()):
-                row_obj = read_citations_row(row)
-                for id_field, field_name in (
-                    (row_obj.citing_id, 'citing_id'),
-                    (row_obj.cited_id, 'cited_id'),
+            # --- Build position cache from CITS data cache ---
+            for str_idx, (citing_id_str, cited_id_str) in cits_cache.items():
+                row_idx = int(str_idx)
+                for id_value, field_name in (
+                    (citing_id_str, 'citing_id'),
+                    (cited_id_str, 'cited_id'),
                 ):
-                    if id_field:
-                        ids = id_field
-                        ids_unique = list(set(i for i in ids if i)) # filter out empty strings
-                        cits_uf.find(ids_unique[0])
-                        for _i in range(1, len(ids_unique)):
-                            cits_uf.union(ids_unique[0], ids_unique[_i])
+                    if id_value:
+                        ids = id_value.split(' ')
+                        ids_unique = list(set(i for i in ids if i))
+                        if not ids_unique:
+                            continue
                         pos_entry = {row_idx: {field_name: list(range(len(ids)))}}
                         for item in ids_unique:
                             existing = cits_positions_cache.get(item)
@@ -1124,15 +1103,6 @@ class ClosureValidator:
                             cits_is_valid_closure = False
 
         finally:
-            # Cleanup resources based on memory_efficient flag
-            if meta_uf_env is not None:
-                meta_uf_env.close()
-            if meta_uf_dir is not None:
-                shutil.rmtree(meta_uf_dir, ignore_errors=True)
-            if cits_uf_env is not None:
-                cits_uf_env.close()
-            if cits_uf_dir is not None:
-                shutil.rmtree(cits_uf_dir, ignore_errors=True)
             meta_positions_cache.close()
             cits_positions_cache.close()
 
