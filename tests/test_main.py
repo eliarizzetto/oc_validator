@@ -171,7 +171,7 @@ class TestValidator(unittest.TestCase):
             meta_output_dir=outdir4,
             cits_csv_doc=invalid_cits,
             cits_output_dir=outdir4,
-            strict_sequenciality=True,
+            strict_sequentiality=True,
             meta_kwargs={'verify_id_existence': False},
             cits_kwargs={'verify_id_existence': False}
         )

@@ -81,8 +81,10 @@ class Validator:
         self.existence = IdExistence(use_meta_endpoint=use_meta_endpoint)
         self.semantics = Semantics()
         script_dir = dirname(abspath(__file__))  # Directory where the script is located
-        self.messages = full_load(open(join(script_dir, 'messages.yaml'), 'r', encoding='utf-8'))
-        self.id_type_dict = load(open(join(script_dir, 'id_type_alignment.json'), 'r', encoding='utf-8'))
+        with open(join(script_dir, 'messages.yaml'), 'r', encoding='utf-8') as fm:
+            self.messages = full_load(fm)
+        with open(join(script_dir, 'id_type_alignment.json'), 'r', encoding='utf-8') as fa:
+            self.id_type_dict = load(fa)
         self.output_dir = output_dir
         if not exists(self.output_dir):
             makedirs(self.output_dir)
@@ -932,15 +934,16 @@ class Validator:
 
 class ClosureValidator:
 
-    def __init__(self, meta_csv_doc, meta_output_dir, cits_csv_doc, cits_output_dir, strict_sequenciality=False, meta_kwargs=None, cits_kwargs=None, use_lmdb=False) -> None:
+    def __init__(self, meta_csv_doc, meta_output_dir, cits_csv_doc, cits_output_dir, strict_sequentiality=False, meta_kwargs=None, cits_kwargs=None, use_lmdb=False) -> None:
         self.meta_csv_doc = meta_csv_doc
         self.meta_output_dir = meta_output_dir
         self.cits_csv_doc = cits_csv_doc
         self.cits_output_dir = cits_output_dir
-        self.strict_sequentiality = strict_sequenciality  # if True, runs the check on transitive closure if and only if the other checks passed without errors
+        self.strict_sequentiality = strict_sequentiality  # if True, runs the check on transitive closure if and only if the other checks passed without errors
 
         script_dir = dirname(abspath(__file__))  # Directory where the script is located
-        self.messages = full_load(open(join(script_dir, 'messages.yaml'), 'r', encoding='utf-8'))
+        with open(join(script_dir, 'messages.yaml'), 'r', encoding='utf-8') as fm:
+            self.messages = full_load(fm)
 
         # Define default kwargs for optional configuration of the two instances of Validator
         default_kwargs = {'use_meta_endpoint': False, 'verify_id_existence': True, 'use_lmdb': use_lmdb}
@@ -1039,7 +1042,7 @@ class ClosureValidator:
                 row_obj = read_metadata_row(row)
                 if row_obj.id:
                     ids = row_obj.id
-                    ids_unique = list(set(ids))
+                    ids_unique = list(set(i for i in ids if i)) # filter out empty strings
                     # Register / union all IDs in LMDB Union-Find
                     meta_uf.find(ids_unique[0])
                     for _i in range(1, len(ids_unique)):
@@ -1063,7 +1066,7 @@ class ClosureValidator:
                 ):
                     if id_field:
                         ids = id_field
-                        ids_unique = list(set(ids))
+                        ids_unique = list(set(i for i in ids if i)) # filter out empty strings
                         cits_uf.find(ids_unique[0])
                         for _i in range(1, len(ids_unique)):
                             cits_uf.union(ids_unique[0], ids_unique[_i])
@@ -1159,8 +1162,8 @@ class ClosureValidator:
         if self.strict_sequentiality:
             if not meta_is_valid or not cits_is_valid:
                 print('The separate validation of the metadata (META-CSV) and citations (CITS-CSV) tables already detected some error (in one or both documents).')
-            print('Skipping the check of transitive closure as strict_sequentiality==True.')
-            return (meta_is_valid, cits_is_valid) 
+                print('Skipping the check of transitive closure as strict_sequentiality==True.')
+                return (meta_is_valid, cits_is_valid) 
         
         # Run validation for transitive closure
         meta_is_valid_closure, cits_is_valid_closure = self.check_closure()
