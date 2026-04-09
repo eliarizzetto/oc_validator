@@ -100,15 +100,10 @@ class Validator:
         self.memory_efficient = use_lmdb
         self.map_size = map_size
         self._cache_dir = cache_dir
-        if cache_dir:
-            makedirs(cache_dir, exist_ok=True)
 
         cache_name = f'validator_{hash(csv_doc)}'
         if use_lmdb:
-            if cache_dir:
-                self.id_cache = LmdbCache(cache_name, path=join(cache_dir, cache_name), map_size=self.map_size)
-            else:
-                self.id_cache = LmdbCache(cache_name, map_size=self.map_size)
+            self.id_cache = LmdbCache(cache_name, base_dir=self._cache_dir or '.', map_size=self.map_size)
         else:
             self.id_cache = InMemoryCache(cache_name)
         
@@ -228,10 +223,7 @@ class Validator:
         # Set up cache based on memory_efficient flag
         dup_cache_name = f'dup_meta_{abs(hash(self.csv_doc))}'
         if self.memory_efficient:
-            if self._cache_dir:
-                dup_cache = LmdbCache(dup_cache_name, path=join(self._cache_dir, dup_cache_name), map_size=self.map_size)
-            else:
-                dup_cache = LmdbCache(dup_cache_name, map_size=self.map_size)
+            dup_cache = LmdbCache(dup_cache_name, base_dir=self._cache_dir or '.', map_size=self.map_size)
         else:
             dup_cache = InMemoryCache(dup_cache_name)
         dup_cache.open()
@@ -788,10 +780,7 @@ class Validator:
         # Set up cache based on memory_efficient flag
         dup_cache_name = f'dup_cits_{abs(hash(self.csv_doc))}'
         if self.memory_efficient:
-            if self._cache_dir:
-                dup_cache = LmdbCache(dup_cache_name, path=join(self._cache_dir, dup_cache_name), map_size=self.map_size)
-            else:
-                dup_cache = LmdbCache(dup_cache_name, map_size=self.map_size)
+            dup_cache = LmdbCache(dup_cache_name, base_dir=self._cache_dir or '.', map_size=self.map_size)
         else:
             dup_cache = InMemoryCache(dup_cache_name)
         dup_cache.open()
@@ -1009,6 +998,12 @@ class ClosureValidator:
             self.meta_validator.close()
         if hasattr(self, 'cits_validator'):
             self.cits_validator.close()
+        if hasattr(self, '_meta_positions_cache') and self._meta_positions_cache is not None:
+            self._meta_positions_cache.close()
+            self._meta_positions_cache = None
+        if hasattr(self, '_cits_positions_cache') and self._cits_positions_cache is not None:
+            self._cits_positions_cache.close()
+            self._cits_positions_cache = None
 
 
     def check_closure(self) -> tuple[bool, bool]:
@@ -1029,18 +1024,14 @@ class ClosureValidator:
 
         # Only position caches are created here
         if self.memory_efficient:
-            cache_base = self.meta_validator._cache_dir
-            if cache_base:
-                meta_positions_cache = LmdbCache('closure_meta_positions', path=join(cache_base, 'closure_meta_positions'), map_size=self.meta_validator.map_size)
-                cits_positions_cache = LmdbCache('closure_cits_positions', path=join(cache_base, 'closure_cits_positions'), map_size=self.cits_validator.map_size)
-            else:
-                meta_positions_cache = LmdbCache('closure_meta_positions', map_size=self.meta_validator.map_size)
-                cits_positions_cache = LmdbCache('closure_cits_positions', map_size=self.cits_validator.map_size)
+            cache_base = self.meta_validator._cache_dir or '.'
+            self._meta_positions_cache = LmdbCache('closure_meta_positions', base_dir=cache_base, map_size=self.meta_validator.map_size)
+            self._cits_positions_cache = LmdbCache('closure_cits_positions', base_dir=cache_base, map_size=self.cits_validator.map_size)
         else:
-            meta_positions_cache = InMemoryCache('closure_meta_positions')
-            cits_positions_cache = InMemoryCache('closure_cits_positions')
-        meta_positions_cache.open()
-        cits_positions_cache.open()
+            self._meta_positions_cache = InMemoryCache('closure_meta_positions')
+            self._cits_positions_cache = InMemoryCache('closure_cits_positions')
+        self._meta_positions_cache.open()
+        self._cits_positions_cache.open()
 
         try:
             # --- Build position cache from META data cache ---
@@ -1053,12 +1044,12 @@ class ClosureValidator:
                         continue
                     pos_entry = {row_idx: {'id': list(range(len(ids)))}}
                     for item in ids_unique:
-                        existing = meta_positions_cache.get(item)
+                        existing = self._meta_positions_cache.get(item)
                         if existing is None:
-                            meta_positions_cache[item] = [pos_entry]
+                            self._meta_positions_cache[item] = [pos_entry]
                         else:
                             existing.append(pos_entry)
-                            meta_positions_cache[item] = existing
+                            self._meta_positions_cache[item] = existing
 
             # --- Build position cache from CITS data cache ---
             for str_idx, (citing_id_str, cited_id_str) in cits_cache.items():
@@ -1074,22 +1065,22 @@ class ClosureValidator:
                             continue
                         pos_entry = {row_idx: {field_name: list(range(len(ids)))}}
                         for item in ids_unique:
-                            existing = cits_positions_cache.get(item)
+                            existing = self._cits_positions_cache.get(item)
                             if existing is None:
-                                cits_positions_cache[item] = [pos_entry]
+                                self._cits_positions_cache[item] = [pos_entry]
                             else:
                                 existing.append(pos_entry)
-                                cits_positions_cache[item] = existing
+                                self._cits_positions_cache[item] = existing
 
             # --- Check META entities that have no citations ---
             # An entity is "missing citations" when ALL of its IDs are absent from cits_positions_cache.
             # We check membership directly in LMDB (O(1) per lookup) — no large Python sets needed.
             with JSONLStreamIO(self.meta_validator.output_fp_json, 'a') as meta_json_file:
                 for _root, br_ids_set in meta_uf.iter_components():
-                    if all(id_ not in cits_positions_cache for id_ in br_ids_set):
+                    if all(id_ not in self._cits_positions_cache for id_ in br_ids_set):
                         table: dict = {}
                         for id_ in br_ids_set:
-                            for pos_dict in (meta_positions_cache.get(id_) or []):
+                            for pos_dict in (self._meta_positions_cache.get(id_) or []):
                                 table.update(pos_dict)
                         if table:
                             meta_json_file.write(
@@ -1107,10 +1098,10 @@ class ClosureValidator:
             # --- Check CITS entities that have no metadata ---
             with JSONLStreamIO(self.cits_validator.output_fp_json, 'a') as cits_json_file:
                 for _root, br_ids_set in cits_uf.iter_components():
-                    if all(id_ not in meta_positions_cache for id_ in br_ids_set):
+                    if all(id_ not in self._meta_positions_cache for id_ in br_ids_set):
                         table = {}
                         for id_ in br_ids_set:
-                            for pos_dict in (cits_positions_cache.get(id_) or []):
+                            for pos_dict in (self._cits_positions_cache.get(id_) or []):
                                 table.update(pos_dict)
                         if table:
                             cits_json_file.write(
@@ -1126,8 +1117,8 @@ class ClosureValidator:
                             cits_is_valid_closure = False
 
         finally:
-            meta_positions_cache.close()
-            cits_positions_cache.close()
+            self._meta_positions_cache.close()
+            self._cits_positions_cache.close()
 
         # Write human-readable validation summaries for both tables
         textual_report_stream_meta = self.helper.create_validation_summary_stream(self.meta_validator.output_fp_json)
@@ -1146,22 +1137,25 @@ class ClosureValidator:
     def validate(self):
 
         # TODO: add informative print messages to say which process is running and when it terminates
-        
-        # Run single validation for META-CSV and CITS-CSV
-        meta_is_valid = self.meta_validator.validate()
-        cits_is_valid = self.cits_validator.validate()
 
-        # in case some errors have already been found and strict_sequentiality is True, don't run the check on closure
-        if self.strict_sequentiality:
-            if not meta_is_valid or not cits_is_valid:
-                print('The separate validation of the metadata (META-CSV) and citations (CITS-CSV) tables already detected some error (in one or both documents).')
-                print('Skipping the check of transitive closure as strict_sequentiality==True.')
-                return (meta_is_valid, cits_is_valid) 
-        
-        # Run validation for transitive closure
-        meta_is_valid_closure, cits_is_valid_closure = self.check_closure()
+        try:
+            # Run single validation for META-CSV and CITS-CSV
+            meta_is_valid = self.meta_validator.validate()
+            cits_is_valid = self.cits_validator.validate()
 
-        return (bool(meta_is_valid_closure and meta_is_valid), bool(cits_is_valid_closure and cits_is_valid))
+            # in case some errors have already been found and strict_sequentiality is True, don't run the check on closure
+            if self.strict_sequentiality:
+                if not meta_is_valid or not cits_is_valid:
+                    print('The separate validation of the metadata (META-CSV) and citations (CITS-CSV) tables already detected some error (in one or both documents).')
+                    print('Skipping the check of transitive closure as strict_sequentiality==True.')
+                    return (meta_is_valid, cits_is_valid)
+
+            # Run validation for transitive closure
+            meta_is_valid_closure, cits_is_valid_closure = self.check_closure()
+
+            return (bool(meta_is_valid_closure and meta_is_valid), bool(cits_is_valid_closure and cits_is_valid))
+        finally:
+            self.close()
 
 
 if __name__ == '__main__':

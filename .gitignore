@@ -15,6 +15,7 @@ output
 validation_output
 tmp
 oc_validator/interface/tmp.py
+data
 
 **/__pycache__/
 

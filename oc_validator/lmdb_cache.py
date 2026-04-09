@@ -23,12 +23,13 @@ class LmdbCache:
         # Cache is automatically closed when exiting context
     """
     
-    def __init__(self, name: str, path: Optional[str] = None, map_size: int = 1 * 1024**3):
+    def __init__(self, name: str, base_dir: str = '.', map_size: int = 1 * 1024**3):
         """
         Initialize LMDB cache.
 
-        :param name: Unique name for this cache (used in directory name)
-        :param path: Optional custom path for LMDB database. If None, uses temp directory.
+        :param name: Unique name for this cache (used in directory name prefix)
+        :param base_dir: Base directory under which a new dedicated temporary
+            directory will be created.  Defaults to the current working directory.
         :param map_size: Maximum database size in bytes.
             On Windows LMDB pre-allocates a file of exactly ``map_size`` bytes;
             on Linux/macOS it uses sparse files so actual disk usage equals only
@@ -38,24 +39,18 @@ class LmdbCache:
         self.name = name
         self._env: Optional[lmdb.Environment] = None
         self.map_size = int(os.getenv('LMDB_MAP_SIZE', str(map_size)))  # use env variable if specified, else default init value
-        
-        if path is None:
-            # Create a temporary directory for the LMDB database
-            self._temp_dir = tempfile.mkdtemp(prefix=f'lmdb_{name}_', dir='.')
-            self.path = os.path.join(self._temp_dir, 'cache')
-        else:
-            self._temp_dir = None
-            self.path = path
-        
+
+        # Always create a new dedicated temporary directory for this environment
+        os.makedirs(base_dir, exist_ok=True)
+        self._temp_dir = tempfile.mkdtemp(prefix=f'lmdb_{name}_', dir=base_dir)
+        self.path = os.path.join(self._temp_dir, 'cache')
+
         self._is_open = False
     
     def open(self):
         """Open the LMDB environment."""
         if self._is_open:
             return
-        
-        # Ensure parent directory exists
-        os.makedirs(os.path.dirname(self.path) if os.path.dirname(self.path) else '.', exist_ok=True)
         
         self._env = lmdb.open(
             self.path,
@@ -69,18 +64,16 @@ class LmdbCache:
         self._is_open = True
     
     def close(self):
-        """Close the LMDB environment."""
+        """Close the LMDB environment and remove its dedicated temporary directory."""
         if self._env is not None:
             self._env.close()
             self._env = None
             self._is_open = False
-        
-        # Clean up temporary directory if we created one
-        if self._temp_dir and os.path.exists(self._temp_dir):
-            try:
-                shutil.rmtree(self._temp_dir)
-            except Exception:
-                pass  # Ignore cleanup errors
+
+        # Clean up the dedicated temporary directory
+        if self._temp_dir is not None and os.path.isdir(self._temp_dir):
+            shutil.rmtree(self._temp_dir, ignore_errors=True)
+            self._temp_dir = None
     
     def __enter__(self):
         self.open()
@@ -227,12 +220,12 @@ class InMemoryCache:
     It provides the same interface as LmdbCache but stores everything in RAM.
     """
     
-    def __init__(self, name: str, path: Optional[str] = None, max_size: int = 10**10):
+    def __init__(self, name: str, base_dir: str = '.', max_size: int = 10**10):
         """
         Initialize in-memory cache.
-        
+
         :param name: Name of the cache (unused, for API compatibility)
-        :param path: Unused, for API compatibility
+        :param base_dir: Unused, for API compatibility
         :param max_size: Unused, for API compatibility
         """
         self.name = name
