@@ -374,7 +374,7 @@ class Validator:
                             if len(br_ids_set) != len(items):  # --> some well-formedness error occurred in the id field
                                 id_ok = False
 
-                    if field == 'title':
+                    elif field == 'title':
                         if value:
                             if value.isupper():
                                 message = messages['m8']
@@ -388,7 +388,7 @@ class Validator:
                                                                       valid=True)
                                 jsonl_file.write(error)
 
-                    if field == 'author' or field == 'editor':
+                    elif field == 'author' or field == 'editor':
                         # Use structured object's parsed field
                         if field == 'author':
                             agents = row_obj.author
@@ -484,7 +484,7 @@ class Validator:
                                                                                 table=table,
                                                                                 valid=True)
                                                     jsonl_file.write(error)
-                    if field == 'pub_date':
+                    elif field == 'pub_date':
                         if value:
                             if not self.wellformed.wellformedness_date(value):
                                 message = messages['m3']
@@ -497,7 +497,7 @@ class Validator:
                                                                       table=table)
                                 jsonl_file.write(error)
 
-                    if field == 'venue':
+                    elif field == 'venue':
                         # Use structured object's parsed field
                         venue = row_obj.venue
                         if venue:
@@ -572,7 +572,7 @@ class Validator:
                                                                                 valid=True)
                                                 jsonl_file.write(error)
 
-                    if field == 'volume':
+                    elif field == 'volume':
                         if value:
                             if not self.wellformed.wellformedness_volume_issue(value):
                                 message = messages['m13']
@@ -585,7 +585,7 @@ class Validator:
                                                                       table=table)
                                 jsonl_file.write(error)
 
-                    if field == 'issue':
+                    elif field == 'issue':
                         if value:
                             if not self.wellformed.wellformedness_volume_issue(value):
                                 message = messages['m13']
@@ -598,7 +598,7 @@ class Validator:
                                                                       table=table)
                                 jsonl_file.write(error)
 
-                    if field == 'page':
+                    elif field == 'page':
                         if value:
                             if not self.wellformed.wellformedness_page(value):
                                 message = messages['m14']
@@ -623,7 +623,7 @@ class Validator:
                                                                       valid=True)
                                     jsonl_file.write(error)
 
-                    if field == 'type':
+                    elif field == 'type':
                         if value:
                             if not self.wellformed.wellformedness_type(value):
                                 message = messages['m16']
@@ -638,7 +638,7 @@ class Validator:
 
                                 type_ok = False
 
-                    if field == 'publisher':
+                    elif field == 'publisher':
                         # Use structured object's parsed field
                         publishers = row_obj.publisher
                         if publishers:
@@ -925,7 +925,7 @@ class Validator:
                                                                                 table=table, valid=True)
                                                 jsonl_file.write(error)
 
-                    if field == 'citing_publication_date' or field == 'cited_publication_date':
+                    elif field == 'citing_publication_date' or field == 'cited_publication_date':
                         if value:
                             if not self.wellformed.wellformedness_date(value):
                                 message = messages['m3']
