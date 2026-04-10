@@ -197,19 +197,17 @@ class Validator:
                 self.id_cache.close()
 
 
-    def _collect_meta_duplicate_data(self):
+    def validate_meta(self) -> bool:
         """
-        First pass: Collect minimal data needed for duplicate detection in META-CSV.
+        Validate an instance of META-CSV using JSON-Lines streaming output
+        :return: True if the table is valid (i.e. no issues found), False otherwise.
+        """
+        messages = self.messages
+        id_type_dict = self.id_type_dict
 
-        Returns a tuple ``(UnionFind, Union[LmdbCache, InMemoryCache], int)`` where:
-        - UnionFind: Union-Find structure for grouping IDs into entities
-        - Cache: maps ``str(row_idx)`` to the raw ``'id'`` field string
-        - int: the total row count
-        
-        The caller is responsible for closing the cache and, if using LMDB,
-        cleaning up the temporary directory when they are no longer needed.
-        """
-        # Set up Union-Find based on memory_efficient flag
+        # Set up Union-Find and cache for duplicate detection
+        # NOTE: if self.memory_efficient is True, these open LMDB envs which must be
+        # closed (deleting related dir) via self.close()
         if self.memory_efficient:
             tmp_base = self._cache_dir or '.'
             uf_tmp_dir = tempfile.mkdtemp(prefix='uf_dup_meta_', dir=tmp_base)
@@ -220,54 +218,35 @@ class Validator:
             uf_tmp_dir = None
             uf_env = None
 
-        # Set up cache based on memory_efficient flag
-        dup_cache_name = f'dup_meta_{abs(hash(self.csv_doc))}'
-        if self.memory_efficient:
-            dup_cache = LmdbCache(dup_cache_name, base_dir=self._cache_dir or '.', map_size=self.map_size)
-        else:
-            dup_cache = InMemoryCache(dup_cache_name)
-        dup_cache.open()
-        
-        row_count = 0
-        for row_idx, row in enumerate(tqdm(self.csv_stream.stream(), desc="First pass: Collecting IDs")):
-            id_value = row.get('id', '')
-            dup_cache[str(row_idx)] = id_value
-            row_count += 1
-            # Populate UF with ALL non-empty IDs (for both duplicate detection and closure)
-            if id_value:
-                items = id_value.split(' ')
-                non_empty = [i for i in items if i]
-                if non_empty:
-                    uf.find(non_empty[0])
-                    for _i in range(1, len(non_empty)):
-                        uf.union(non_empty[0], non_empty[_i])
-
-        return (uf, dup_cache, row_count, uf_tmp_dir, uf_env)
-    
-    def validate_meta(self) -> bool:
-        """
-        Validate an instance of META-CSV using JSON-Lines streaming output
-        :return: the list of errors, i.e. the report of the validation process
-        """
-        messages = self.messages
-        id_type_dict = self.id_type_dict
-
-        # First pass: Collect data for duplicate detection (gets Union-Find and cache)
-        # NOTE: if self.memory_efficient is True self._collect_meta_duplicate_data() opens 
-        # an LMDB env, which must be closed (deleting related dir) via self.close()
-        uf, duplicate_data_cache, rows_count, uf_tmp_dir, uf_env = self._collect_meta_duplicate_data()
         self._uf = uf
         self._uf_tmp_dir = uf_tmp_dir
         self._uf_env = uf_env
+
+        dup_cache_name = f'dup_meta_{abs(hash(self.csv_doc))}'
+        if self.memory_efficient:
+            duplicate_data_cache = LmdbCache(dup_cache_name, base_dir=self._cache_dir or '.', map_size=self.map_size)
+        else:
+            duplicate_data_cache = InMemoryCache(dup_cache_name)
+        duplicate_data_cache.open()
         self.duplicate_data_cache = duplicate_data_cache
 
         # Open JSON-L file for streaming output
         with JSONLStreamIO(self.output_fp_json, 'a') as jsonl_file:
-            # Second pass: Stream validation
-            for row_idx, row in enumerate(tqdm(self.csv_stream.stream(), desc="Second pass: Validating", total=rows_count)):
+            for row_idx, row in enumerate(tqdm(self.csv_stream.stream(), desc="Validating")):
                 row_ok = True  # switch for row well-formedness
                 id_ok = True  # switch for id field well-formedness
                 type_ok = True  # switch for type field well-formedness
+
+                # Collect ID data for duplicate detection
+                id_value = row.get('id', '')
+                duplicate_data_cache[str(row_idx)] = id_value
+                if id_value:
+                    items = id_value.split(' ')
+                    non_empty = [i for i in items if i]
+                    if non_empty:
+                        uf.find(non_empty[0])
+                        for _i in range(1, len(non_empty)):
+                            uf.union(non_empty[0], non_empty[_i])
 
                 missing_required_fields = self.wellformed.get_missing_values(
                     row)  # dict w/ positions of error in row; empty if row is fine
@@ -758,19 +737,14 @@ class Validator:
         is_valid = JSONLStreamIO(self.output_fp_json).is_empty()
         return is_valid
 
-    def _collect_cits_duplicate_data(self):
+    def validate_cits(self) -> bool:
         """
-        First pass: Collect minimal data needed for duplicate detection in CITS-CSV.
+        Validates an instance of CITS-CSV using JSON-Lines streaming output
+        :return: True if the table is valid (i.e. no issues found), False otherwise.
+        """
+        messages = self.messages
 
-        Returns a tuple ``(UnionFind, Union[LmdbCache, InMemoryCache], int)`` where:
-        - UnionFind: Union-Find structure for grouping IDs into entities
-        - Cache: maps ``str(row_idx)`` to a ``(citing_id_str, cited_id_str)`` tuple
-        - int: total row count
-        
-        The caller is responsible for closing the cache and, if using LMDB,
-        cleaning up the temporary directory when it is no longer needed.
-        """
-        # Set up Union-Find based on memory_efficient flag
+        # Set up Union-Find and cache for duplicate detection
         if self.memory_efficient:
             tmp_base = self._cache_dir or '.'
             uf_tmp_dir = tempfile.mkdtemp(prefix='uf_dup_cits_', dir=tmp_base)
@@ -781,50 +755,34 @@ class Validator:
             uf_tmp_dir = None
             uf_env = None
 
-        # Set up cache based on memory_efficient flag
-        dup_cache_name = f'dup_cits_{abs(hash(self.csv_doc))}'
-        if self.memory_efficient:
-            dup_cache = LmdbCache(dup_cache_name, base_dir=self._cache_dir or '.', map_size=self.map_size)
-        else:
-            dup_cache = InMemoryCache(dup_cache_name)
-        dup_cache.open()
-        
-        row_count = 0
-        for row_idx, row in enumerate(tqdm(self.csv_stream.stream(), desc="First pass: Collecting IDs")):
-            citing_id = row.get('citing_id', '')
-            cited_id = row.get('cited_id', '')
-            dup_cache[str(row_idx)] = (citing_id, cited_id)
-            row_count += 1
-            # Populate UF with ALL non-empty IDs from each field separately
-            for id_value in (citing_id, cited_id):
-                if id_value:
-                    items = id_value.split(' ')
-                    non_empty = [i for i in items if i]
-                    if non_empty:
-                        uf.find(non_empty[0])
-                        for _i in range(1, len(non_empty)):
-                            uf.union(non_empty[0], non_empty[_i])
-
-        return (uf, dup_cache, row_count, uf_tmp_dir, uf_env)
-
-    def validate_cits(self) -> bool:
-        """
-        Validates an instance of CITS-CSV using JSON-Lines streaming output
-        :return: the list of errors, i.e. the report of the validation process
-        """
-        messages = self.messages
-
-        # First pass: Collect data for duplicate detection (gets Union-Find and cache)
-        uf, duplicate_data_cache, rows_count, uf_tmp_dir, uf_env = self._collect_cits_duplicate_data()
         self._uf = uf
         self._uf_tmp_dir = uf_tmp_dir
         self._uf_env = uf_env
+
+        dup_cache_name = f'dup_cits_{abs(hash(self.csv_doc))}'
+        if self.memory_efficient:
+            duplicate_data_cache = LmdbCache(dup_cache_name, base_dir=self._cache_dir or '.', map_size=self.map_size)
+        else:
+            duplicate_data_cache = InMemoryCache(dup_cache_name)
+        duplicate_data_cache.open()
         self.duplicate_data_cache = duplicate_data_cache
 
         # Open JSON-L file for streaming output
         with JSONLStreamIO(self.output_fp_json, 'a') as jsonl_file:
-            # Second pass: Stream validation
-            for row_idx, row in enumerate(tqdm(self.csv_stream.stream(), desc="Second pass: Validating", total=rows_count)):
+            for row_idx, row in enumerate(tqdm(self.csv_stream.stream(), desc="Validating")):
+                # Collect ID data for duplicate detection
+                citing_id = row.get('citing_id', '')
+                cited_id = row.get('cited_id', '')
+                duplicate_data_cache[str(row_idx)] = (citing_id, cited_id)
+                for id_value in (citing_id, cited_id):
+                    if id_value:
+                        items = id_value.split(' ')
+                        non_empty = [i for i in items if i]
+                        if non_empty:
+                            uf.find(non_empty[0])
+                            for _i in range(1, len(non_empty)):
+                                uf.union(non_empty[0], non_empty[_i])
+
                 # Parse row into structured object
                 row_obj = read_citations_row(row)
                 

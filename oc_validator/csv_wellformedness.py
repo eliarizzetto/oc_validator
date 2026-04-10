@@ -405,8 +405,8 @@ class Wellformedness:
         persisted in a temporary cache and iterated at the end to
         detect duplicates.
 
-        :param uf: ``LmdbUnionFind`` or ``InMemoryUnionFind`` (same API) populated with all well-formed IDs
-            encountered during the second validation pass.
+        :param uf: ``LmdbUnionFind`` or ``InMemoryUnionFind`` (same API) populated with all IDs
+            encountered during the validation pass.
         :param data_cache: ``LmdbCache`` or ``InMemoryCache`` (same API) mapping ``str(row_idx)`` to a
             ``(citing_id_str, cited_id_str)`` tuple for every row.
         :param messages: Error-message template dict (from messages.yaml).
@@ -539,8 +539,8 @@ class Wellformedness:
         persisted in a temporary ``LmdbCache`` and iterated at the end to
         detect duplicates.
 
-        :param uf: ``LmdbUnionFind`` populated with all well-formed IDs
-            encountered during the second validation pass.
+        :param uf: ``LmdbUnionFind`` populated with all IDs
+            encountered during the validation pass.
         :param data_cache: ``LmdbCache`` mapping ``str(row_idx)`` to the raw
             ``'id'`` field string for every row.
         :param messages: Error-message template dict (from messages.yaml).
