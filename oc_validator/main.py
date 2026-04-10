@@ -253,6 +253,8 @@ class Validator:
         id_type_dict = self.id_type_dict
 
         # First pass: Collect data for duplicate detection (gets Union-Find and cache)
+        # NOTE: if self.memory_efficient is True self._collect_meta_duplicate_data() opens 
+        # an LMDB env, which must be closed (deleting related dir) via self.close()
         uf, duplicate_data_cache, rows_count, uf_tmp_dir, uf_env = self._collect_meta_duplicate_data()
         self._uf = uf
         self._uf_tmp_dir = uf_tmp_dir
@@ -952,11 +954,11 @@ class Validator:
 
 class ClosureValidator:
 
-    def __init__(self, meta_csv_doc, meta_output_dir, cits_csv_doc, cits_output_dir, strict_sequentiality=False, meta_kwargs=None, cits_kwargs=None, use_lmdb=False, map_size: int = 1 * 1024**3, cache_dir: str = None) -> None:
-        self.meta_csv_doc = meta_csv_doc
-        self.meta_output_dir = meta_output_dir
-        self.cits_csv_doc = cits_csv_doc
-        self.cits_output_dir = cits_output_dir
+    def __init__(self, meta_in, meta_out_dir, cits_in, cits_out_dir, strict_sequentiality=False, meta_kwargs=None, cits_kwargs=None, use_lmdb=False, map_size: int = 1 * 1024**3, cache_dir: str = None) -> None:
+        self.meta_csv_doc = meta_in
+        self.meta_output_dir = meta_out_dir
+        self.cits_csv_doc = cits_in
+        self.cits_output_dir = cits_out_dir
         self.strict_sequentiality = strict_sequentiality  # if True, runs the check on transitive closure if and only if the other checks passed without errors
 
         script_dir = dirname(abspath(__file__))  # Directory where the script is located

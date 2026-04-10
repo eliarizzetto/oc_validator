@@ -33,10 +33,10 @@ class TestValidator(unittest.TestCase):
         cits_csv = 'test_data/valid_cits_mock.csv'
         with self.assertRaises(TableNotMatchingInstance):
             ClosureValidator(
-                meta_csv_doc=cits_csv, 
-                meta_output_dir='test_output',
-                cits_csv_doc=meta_csv, 
-                cits_output_dir='test_output')
+                meta_in=cits_csv, 
+                meta_out_dir='test_output',
+                cits_in=meta_csv, 
+                cits_out_dir='test_output')
 
     def test_validate_meta(self):
         """
@@ -113,10 +113,10 @@ class TestValidator(unittest.TestCase):
         valid_meta_csv = 'test_data/valid_meta_mock.csv' 
         valid_cits_csv = 'test_data/valid_cits_mock.csv'
         closure_validator1 = ClosureValidator(
-            meta_csv_doc=valid_meta_csv,
-            meta_output_dir=outdir1,
-            cits_csv_doc=valid_cits_csv,
-            cits_output_dir=outdir1
+            meta_in=valid_meta_csv,
+            meta_out_dir=outdir1,
+            cits_in=valid_cits_csv,
+            cits_out_dir=outdir1
         )
         outcome1 = closure_validator1.validate()
         self.assertIsInstance(outcome1, tuple)
@@ -131,10 +131,10 @@ class TestValidator(unittest.TestCase):
         other_valid_meta_csv = 'test_data/other_valid_meta_mock.csv'
         other_valid_cits_csv = 'test_data/other_valid_cits_mock.csv'
         closure_validator2 = ClosureValidator(
-            meta_csv_doc=other_valid_meta_csv,
-            meta_output_dir=outdir2,
-            cits_csv_doc=other_valid_cits_csv,
-            cits_output_dir=outdir2,
+            meta_in=other_valid_meta_csv,
+            meta_out_dir=outdir2,
+            cits_in=other_valid_cits_csv,
+            cits_out_dir=outdir2,
             meta_kwargs={'verify_id_existence': False},
             cits_kwargs={'verify_id_existence': False}
         )
@@ -152,10 +152,10 @@ class TestValidator(unittest.TestCase):
         outdir3 = join(self.test_output_dir, 'non_closed_invalid_cits')
         invalid_cits = 'test_data/invalid_cits_mock.csv'
         closure_validator3 = ClosureValidator(
-            meta_csv_doc=other_valid_meta_csv,
-            meta_output_dir=outdir3,
-            cits_csv_doc=invalid_cits,
-            cits_output_dir=outdir3,
+            meta_in=other_valid_meta_csv,
+            meta_out_dir=outdir3,
+            cits_in=invalid_cits,
+            cits_out_dir=outdir3,
             meta_kwargs={'verify_id_existence': False},
             cits_kwargs={'verify_id_existence': False}
         )
@@ -167,10 +167,10 @@ class TestValidator(unittest.TestCase):
         # NON-CLOSED TABLES (ONE INVALID) with strict_sequentiality=True option 
         outdir4 = join(self.test_output_dir, 'non_closed_invalid_cits_strict')
         closure_validator4 = ClosureValidator(
-            meta_csv_doc=other_valid_meta_csv,
-            meta_output_dir=outdir4,
-            cits_csv_doc=invalid_cits,
-            cits_output_dir=outdir4,
+            meta_in=other_valid_meta_csv,
+            meta_out_dir=outdir4,
+            cits_in=invalid_cits,
+            cits_out_dir=outdir4,
             strict_sequentiality=True,
             meta_kwargs={'verify_id_existence': False},
             cits_kwargs={'verify_id_existence': False}
