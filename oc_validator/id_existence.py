@@ -42,8 +42,8 @@ class IdExistence:
         self.jid_mngr = jid.JIDManager()
         self.arxiv_mngr = arxiv.ArXivManager()
         self.use_meta_endpoint = use_meta_endpoint
-        self.sparql = SPARQLWrapper("https://opencitations.net/meta/sparql")
-        self.sparql.addCustomHttpHeader('Authorization', '4c793897-7787-43ff-b7fa-00aaf7ddf7ed')
+        self.sparql = SPARQLWrapper("https://sparql.opencitations.net/meta")
+        self.sparql.addCustomHttpHeader('User-Agent', 'oc_validator')
 
     def check_id_existence(self, id:str):
         """

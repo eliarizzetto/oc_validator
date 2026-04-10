@@ -14,6 +14,7 @@
 
 from collections import defaultdict
 from csv import field_size_limit, DictReader
+import json
 
 
 class UnionFind:
@@ -106,61 +107,134 @@ class Helper:
 
         return result
 
-    def create_validation_summary(self, error_report):
+    # def create_validation_summary(self, error_report):
+    #     """
+    #     Creates a natural language summary of the validation error report.
+    #     :param error_report:
+    #     :return:
+    #     """
+
+    #     # Count the number of instances of each error label
+    #     error_counts = {}
+    #     for error in error_report:
+    #         label = error['error_label']
+    #         error_counts[label] = error_counts.get(label, 0) + 1
+
+    #     label_report = []
+    #     for label, count in error_counts.items():
+    #         errors_with_label = [e for e in error_report if e['error_label'] == label]
+    #         explanation = errors_with_label[0]['message']  # all errors w/ a given label have the same message
+    #         instance_details = []
+    #         count_summary = f"There are {count} {label} issues in the document." if count > 1 else f"There is {count} {label} issue in the document. "
+    #         for err_idx, error in enumerate(errors_with_label):
+    #             tree = error['position']['table']
+    #             all_locs = []
+    #             for row_node_pos, row_node_value in tree.items():
+    #                 involved_row = row_node_pos
+    #                 for field_node_name, field_node_value in row_node_value.items():
+    #                     involved_field = field_node_name
+    #                     involved_items = field_node_value
+    #                     single_node_pos = f"row {involved_row}, field {involved_field}, and items in position {involved_items}"
+    #                     all_locs.append(single_node_pos)
+
+    #             if len(all_locs) > 1:
+    #                 location = f""
+    #                 pointer = 0
+    #                 while pointer < len(all_locs):
+    #                     location = location + all_locs[pointer] + "; "
+    #                     pointer += 1
+    #                 else:
+    #                     location = location[:-2]
+    #             else:
+    #                 location = f"{all_locs[0]}"
+
+    #             # Construct a detailed message for each error
+    #             if len(errors_with_label) > 1:
+    #                 detail = f"- {error['error_type']} {err_idx + 1} involves: {location}."
+    #             else:
+    #                 detail = f"- The {error['error_type']} involves: {location}."
+    #             instance_details.append(detail)
+
+    #         # Combine the summary and detailed messages for the current error label
+    #         error_label_summary = count_summary + "\n" + explanation + "\n" + "\n".join(instance_details)
+    #         label_report.append(error_label_summary)
+
+    #     # Combine all the error messages into a single string
+    #     report = "\n\n".join(label_report)
+    #     return report
+    
+
+    def create_validation_summary_stream(self, json_fp):
         """
-        Creates a natural language summary of the validation error report.
-        :param error_report:
-        :return:
+        Streams a natural language summary of the validation error report.
+
+        :param json_fp: Path to the JSON file containing the validation error report
+        :return: generator yielding lines (strings)
         """
 
-        # Count the number of instances of each error label
+        # ---- FIRST PASS: count errors per label + store explanation ----
         error_counts = {}
-        for error in error_report:
-            label = error['error_label']
-            error_counts[label] = error_counts.get(label, 0) + 1
+        label_explanations = {}
 
-        label_report = []
-        for label, count in error_counts.items():
-            errors_with_label = [e for e in error_report if e['error_label'] == label]
-            explanation = errors_with_label[0]['message']  # all errors w/ a given label have the same message
-            instance_details = []
-            count_summary = f"There are {count} {label} issues in the document." if count > 1 else f"There is {count} {label} issue in the document. "
-            for err_idx, error in enumerate(errors_with_label):
+        with JSONLStreamIO(json_fp) as jsonl_stream:
+            for error in jsonl_stream:
+                label = error['error_label']
+                error_counts[label] = error_counts.get(label, 0) + 1
+
+                # store explanation once
+                if label not in label_explanations:
+                    label_explanations[label] = error['message']
+
+        # ---- SECOND PASS: stream output ----
+        with JSONLStreamIO(json_fp) as jsonl_stream:
+
+            current_label_seen = {label: 0 for label in error_counts}
+
+            for error in jsonl_stream:
+                label = error['error_label']
+
+                # If first time we encounter this label → print header
+                if current_label_seen[label] == 0:
+                    count = error_counts[label]
+                    explanation = label_explanations[label] + "\n"
+
+                    count_summary = (
+                        f"There are {count} {label} issues in the document.\n"
+                        if count > 1
+                        else f"There is {count} {label} issue in the document.\n"
+                    )
+
+                    yield count_summary
+                    yield explanation
+
+                # ---- build location string ----
                 tree = error['position']['table']
                 all_locs = []
+
                 for row_node_pos, row_node_value in tree.items():
-                    involved_row = row_node_pos
                     for field_node_name, field_node_value in row_node_value.items():
-                        involved_field = field_node_name
-                        involved_items = field_node_value
-                        single_node_pos = f"row {involved_row}, field {involved_field}, and items in position {involved_items}"
+                        single_node_pos = (
+                            f"row {row_node_pos}, field {field_node_name}, "
+                            f"and items in position {field_node_value}"
+                        )
                         all_locs.append(single_node_pos)
 
-                if len(all_locs) > 1:
-                    location = f""
-                    pointer = 0
-                    while pointer < len(all_locs):
-                        location = location + all_locs[pointer] + "; "
-                        pointer += 1
-                    else:
-                        location = location[:-2]
+                location = "; ".join(all_locs)
+
+                # ---- detail line ----
+                current_label_seen[label] += 1
+                idx = current_label_seen[label]
+
+                if error_counts[label] > 1:
+                    detail = f"- {error['error_type']} {idx} involves: {location}.\n"
                 else:
-                    location = f"{all_locs[0]}"
+                    detail = f"- The {error['error_type']} involves: {location}.\n"
 
-                # Construct a detailed message for each error
-                if len(errors_with_label) > 1:
-                    detail = f"- {error['error_type']} {err_idx + 1} involves: {location}."
-                else:
-                    detail = f"- The {error['error_type']} involves: {location}."
-                instance_details.append(detail)
+                yield detail
 
-            # Combine the summary and detailed messages for the current error label
-            error_label_summary = count_summary + "\n" + explanation + "\n" + "\n".join(instance_details)
-            label_report.append(error_label_summary)
-
-        # Combine all the error messages into a single string
-        report = "\n\n".join(label_report)
-        return report
+                # spacing between groups
+                if current_label_seen[label] == error_counts[label]:
+                    yield "\n\n"
 
 
 class CSVStreamReader:
@@ -209,6 +283,44 @@ class CSVStreamReader:
         return self.stream()
 
 
+class JSONLStreamIO:
+    def __init__(self, jsonl_fp, mode='r'):
+        self.jsonl_fp = jsonl_fp
+        self.mode = mode
+        self._file = None
+
+    def __enter__(self):
+        self._file = open(self.jsonl_fp, self.mode, encoding='utf-8')
+        return self
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        if self._file:
+            self._file.close()
+
+    def is_empty(self):
+        with open(self.jsonl_fp, 'r', encoding='utf-8') as f:
+            for line in f:
+                if json.loads(line.strip()):
+                    return False
+        return True
+
+    def read(self):
+        with open(self.jsonl_fp, 'r', encoding='utf-8') as f:
+            for line in f:
+                yield json.loads(line.strip())
+
+    def __iter__(self):
+        return self.read()
+
+    def write(self, json_obj):
+        if self._file is None:
+            raise ValueError("File not open. Use context manager with mode='a' or 'w'.")
+        self._file.write(json.dumps(json_obj) + '\n')
+
+    def flush(self):
+        if self._file:
+            self._file.flush()
+
 def read_csv(csv_fp):
     """
     Legacy function kept for backward compatibility.
@@ -225,4 +337,3 @@ def read_csv(csv_fp):
             if rows and len(rows[0]) > 1:  # if each dict has more than 1 key, we assume it's read correctly
                 return rows
     raise ValueError("Could not detect CSV delimiter")
-

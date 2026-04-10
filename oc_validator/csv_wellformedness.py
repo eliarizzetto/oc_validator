@@ -15,8 +15,10 @@
 from re import match, search, sub
 from roman import fromRoman, InvalidRomanNumeralError
 from oc_validator.helper import Helper
+from oc_validator.lmdb_cache import LmdbCache, LmdbUnionFind, InMemoryCache, InMemoryUnionFind
 from json import load
 from os.path import join, dirname, abspath
+from typing import Generator, Union
 
 
 class Wellformedness:
@@ -25,7 +27,8 @@ class Wellformedness:
         self.br_id_schemes = ['doi', 'issn', 'isbn', 'pmid', 'pmcid', 'url', 'wikidata', 'wikipedia', 'openalex', 'temp', 'local', 'omid', 'jid', 'arxiv']
         self.br_id_schemes_for_venues = ['doi', 'issn', 'isbn', 'pmid', 'pmcid', 'url', 'wikidata', 'wikipedia', 'openalex', 'omid', 'jid', 'arxiv']
         self.ra_id_schemes = ['crossref', 'orcid', 'viaf', 'wikidata', 'ror', 'omid']
-        self.id_type_dict = load(open(join(dirname(abspath(__file__)), 'id_type_alignment.json'), 'r', encoding='utf-8'))
+        with open(join(dirname(abspath(__file__)), 'id_type_alignment.json'), 'r', encoding='utf-8') as fa:
+            self.id_type_dict = load(fa)
 
 
     def wellformedness_br_id(self, id_element):
@@ -394,77 +397,92 @@ class Wellformedness:
     #                                               table=table))
     #     return report
 
-    def get_duplicates_cits(self, entities: list, data_dict: dict, messages) -> list: 
+    def get_duplicates_cits(self, uf: Union[LmdbUnionFind,InMemoryUnionFind], data_cache: Union[LmdbCache, InMemoryCache], messages) -> Generator:
         """
-        Find duplicate citations and self-citations in CITS-CSV.
-        data_dict is a dict mapping row_idx to tuple of (citing_id, cited_id) values
+        Find duplicate citations and self-citations in CITS-CSV using LMDB-backed storage.
+
+        No large structures are held in RAM: the citation-occurrence map is
+        persisted in a temporary cache and iterated at the end to
+        detect duplicates.
+
+        :param uf: ``LmdbUnionFind`` or ``InMemoryUnionFind`` (same API) populated with all well-formed IDs
+            encountered during the second validation pass.
+        :param data_cache: ``LmdbCache`` or ``InMemoryCache`` (same API) mapping ``str(row_idx)`` to a
+            ``(citing_id_str, cited_id_str)`` tuple for every row.
+        :param messages: Error-message template dict (from messages.yaml).
+        :return: Generator of error-dict objects (same format as before).
         """
-        # Build a fast lookup map: ID -> entity index
-        id_to_entity_index = {}
-        for idx, entity_set in enumerate(entities):
-            for id_ in entity_set:
-                id_to_entity_index[id_] = idx
+        # citation_map_cache: key = "citing_root\x00cited_root",
+        #                     value = {row_idx: {'citing_id': [...], 'cited_id': [...]}}
 
-        citation_map = {}  # key: (citing_idx, cited_idx), value: table of row indices
-        report = []
+        # Infer  from the type of data_cache whether to use an in-memory 
+        # object or an LMDB cache to collect duplicate issues positions
+        if isinstance(data_cache, InMemoryCache):
+            res_caching = InMemoryCache
+        else:
+            res_caching = LmdbCache
 
-        for row_idx, (citing_id, cited_id) in data_dict.items():
-            citing_items = citing_id.split(' ')
-            cited_items = cited_id.split(' ')
+        with res_caching('dup_cits_citation_map') as citation_map_cache:
+            for str_idx, (citing_id, cited_id) in data_cache.items():
+                row_idx = int(str_idx)
+                citing_items = citing_id.split(' ')
+                cited_items = cited_id.split(' ')
 
-            # Find first mapped citing entity
-            citing_idx = next((id_to_entity_index.get(item) for item in citing_items if item in id_to_entity_index), None)
-            cited_idx = next((id_to_entity_index.get(item) for item in cited_items if item in id_to_entity_index), None)
+                # Find first registered citing / cited entity root (O(1) LMDB lookup each)
+                citing_root = next(
+                    (uf.find(item) for item in citing_items if item in uf), None
+                )
+                cited_root = next(
+                    (uf.find(item) for item in cited_items if item in uf), None
+                )
 
-            if citing_idx is None or cited_idx is None:
-                continue  # skip rows with unmapped entities
+                if citing_root is None or cited_root is None:
+                    continue  # row has no mappable entities — skip
 
-            # SELF-CITATION
-            if citing_idx == cited_idx:
-                table = {
-                    row_idx: {
-                        'citing_id': list(range(len(citing_items))),
-                        'cited_id': list(range(len(cited_items)))
+                # SELF-CITATION: citing and cited entity are the same
+                if citing_root == cited_root:
+                    table = {
+                        row_idx: {
+                            'citing_id': list(range(len(citing_items))),
+                            'cited_id': list(range(len(cited_items))),
+                        }
                     }
-                }
-                message = messages['m4']
-                report.append(
-                    self.helper.create_error_dict(
+                    yield self.helper.create_error_dict(
                         validation_level='csv_wellformedness',
                         error_type='warning',
-                        message=message,
+                        message=messages['m4'],
                         error_label='self-citation',
                         located_in='field',
                         table=table,
-                        valid=True
+                        valid=True,
                     )
-                )
 
-            # Track citations
-            key = (citing_idx, cited_idx)
-            if key not in citation_map:
-                citation_map[key] = {}
-            citation_map[key][row_idx] = {
-                'citing_id': list(range(len(citing_items))),
-                'cited_id': list(range(len(cited_items)))
-            }
+                # Accumulate citation occurrences in LMDB (read-modify-write)
+                cit_key = f'{citing_root}\x00{cited_root}'
+                row_entry = {
+                    row_idx: {
+                        'citing_id': list(range(len(citing_items))),
+                        'cited_id': list(range(len(cited_items))),
+                    }
+                }
+                existing = citation_map_cache.get(cit_key)
+                if existing is None:
+                    citation_map_cache[cit_key] = row_entry
+                else:
+                    existing.update(row_entry)
+                    citation_map_cache[cit_key] = existing
 
-        # Identify duplicates
-        for citation, table in citation_map.items():
-            if len(table) > 1:
-                message = messages['m5']
-                report.append(
-                    self.helper.create_error_dict(
+            # Second scan: yield errors for citations that appear more than once
+            for _cit_key, table in citation_map_cache.items():
+                if len(table) > 1:
+                    yield self.helper.create_error_dict(
                         validation_level='csv_wellformedness',
                         error_type='error',
-                        message=message,
+                        message=messages['m5'],
                         error_label='duplicate_citation',
                         located_in='row',
-                        table=table
+                        table=table,
                     )
-                )
-
-        return report
 
     # # THIS FUNCTION IS THE OLD FUNCTION TO GET DUPLICATES, KEPT HERE FOR REFERENCE.
     # def get_duplicates_meta(self, entities: list, data_dict: list, messages) -> list:
@@ -513,51 +531,61 @@ class Wellformedness:
 
     #     return report
 
-    def get_duplicates_meta(self, entities: list, data_dict: dict, messages) -> list:
+    def get_duplicates_meta(self, uf: Union[LmdbUnionFind, InMemoryUnionFind], data_cache: Union[LmdbCache, InMemoryCache], messages) -> Generator:
         """
-        Find duplicate bibliographic entities in META-CSV.
-        data_dict is a dict mapping row_idx to 'id' field value (string)
+        Find duplicate bibliographic entities in META-CSV using LMDB-backed storage.
+
+        No large structures are held in RAM: the entity-occurrence map is
+        persisted in a temporary ``LmdbCache`` and iterated at the end to
+        detect duplicates.
+
+        :param uf: ``LmdbUnionFind`` populated with all well-formed IDs
+            encountered during the second validation pass.
+        :param data_cache: ``LmdbCache`` mapping ``str(row_idx)`` to the raw
+            ``'id'`` field string for every row.
+        :param messages: Error-message template dict (from messages.yaml).
+        :return: Generator of error-dict objects (same format as before).
         """
-        # Build ID → entity index lookup
-        id_to_entity_index = {}
-        for idx, entity_set in enumerate(entities):
-            for id_ in entity_set:
-                id_to_entity_index[id_] = str(idx)
+        # meta_map_cache: key = entity root string,
+        #                 value = {row_idx: {'id': [0, 1, ...]}}
 
-        # Track meta_id → table
-        meta_map = {}
-        report = []
+        # Infer  from the type of data_cache whether to use an in-memory 
+        # object or an LMDB cache to collect duplicate issues positions
+        if isinstance(data_cache, InMemoryCache):
+            res_caching = InMemoryCache
+        else:
+            res_caching = LmdbCache
 
-        for row_idx, id_value in data_dict.items():
-            items = id_value.split(' ')
+        with res_caching('dup_meta_entity_map') as meta_map_cache:
+            for str_idx, id_value in data_cache.items():
+                row_idx = int(str_idx)
+                items = id_value.split(' ')
 
-            # Find first valid ID that maps to an entity
-            meta_id = next((id_to_entity_index.get(item) for item in items if item in id_to_entity_index), None)
+                # Find the first registered ID and resolve its entity root
+                root = next(
+                    (uf.find(item) for item in items if item in uf), None
+                )
+                if root is None:
+                    continue  # row has no valid mapped IDs — skip
 
-            if meta_id is None:
-                continue  # skip rows with no valid ID
+                row_table = {row_idx: {'id': list(range(len(items)))}}
 
-            # Build row table
-            row_table = {row_idx: {'id': list(range(len(items)))}}
+                # Read-modify-write: accumulate occurrences per entity root
+                existing:dict = meta_map_cache.get(root)
+                if existing is None:
+                    meta_map_cache[root] = row_table
+                else:
+                    existing.update(row_table)
+                    meta_map_cache[root] = existing
 
-            if meta_id not in meta_map:
-                meta_map[meta_id] = row_table
-            else:
-                meta_map[meta_id].update(row_table)
-
-        # Collect duplicates
-        for meta_id, table in meta_map.items():
-            if len(table) > 1:
-                message = messages['m11']
-                report.append(
-                    self.helper.create_error_dict(
+            # Second scan: yield errors for entities that appear more than once
+            for _root, table in meta_map_cache.items():
+                if len(table) > 1:
+                    yield self.helper.create_error_dict(
                         validation_level='csv_wellformedness',
                         error_type='error',
-                        message=message,
+                        message=messages['m11'],
                         error_label='duplicate_br',
                         located_in='row',
-                        table=table
+                        table=table,
                     )
-                )
-
-        return report

@@ -15,8 +15,14 @@ output
 validation_output
 tmp
 oc_validator/interface/tmp.py
+data
 
 **/__pycache__/
 
 # Storage dir for validated IDs
 storage/
+
+# cline
+.clineignore
+cline/
+*.cline*

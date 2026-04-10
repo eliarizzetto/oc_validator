@@ -61,7 +61,7 @@ class VenueInfo:
         Expected format: "Venue Name [id1:xxx id2:yyy]" or just "Venue Name" or just "[id1:xxx]"
         """
         # Extract IDs from brackets (using venue ID schemes)
-        self.ids = [m.group() for m in finditer(r'((?:doi|issn|isbn|url|wikidata|wikipedia|openalex|omid|jid|arxiv):\S+)(?=\s|\])', raw)]
+        self.ids = [m.group() for m in finditer(r'((?:doi|issn|isbn|url|wikidata|wikipedia|openalex|omid|jid|arxiv|pmid):\S+)(?=\s|\])', raw)]
         
         # Extract name part (everything before first '[' or the whole string if no brackets)
         bracket_pos = raw.find('[')

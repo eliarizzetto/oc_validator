@@ -200,8 +200,12 @@ def make_gui(csv_fp:str, report_fp:str, out_fp:str):
         lstrip_blocks=True
     )
 
-    with open(report_fp, 'r') as f:
-        report = json.load(f)
+    # Read JSON-Lines file (one JSON object per line)
+    report = []
+    with open(report_fp, 'r', encoding='utf-8') as f:
+        for line in f:
+            if line.strip():  # Skip empty lines
+                report.append(json.loads(line))
     
     with open(join(current_dir, 'script.js'), 'r') as script_file, open(join(current_dir, 'style.css'), 'r') as style_file:
         script = script_file.read()
