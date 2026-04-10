@@ -396,7 +396,7 @@ class Validator:
                             agents = row_obj.editor
                         
                         if agents:
-                            resp_agents = set()
+                            seen_ra_ids = set()
                             items = agents  # Already parsed list of AgentItem objects
 
                             for item_idx, item in enumerate(items):
@@ -426,19 +426,21 @@ class Validator:
                                     jsonl_file.write(error)
 
                                 else:
-                                    if item._raw not in resp_agents:
-                                        resp_agents.add(item._raw)
-                                    else:  # in-field duplication of the same author/editor
-                                        table = {row_idx: {field: [i for i, v in enumerate(items) if v._raw == item._raw]}}
-                                        message = messages['m26']
+                                    
+                                    for pid in item.ids:
+                                        if pid not in seen_ra_ids:
+                                            seen_ra_ids.add(pid)
+                                        else:  # in-field duplication of the same author/editor (based on ID only)
+                                            table = {row_idx: {field: [i for i, v in enumerate(items) if pid in v._raw]}}
+                                            message = messages['m26']
 
-                                        error = self.helper.create_error_dict(validation_level='csv_wellformedness',
-                                                                              error_type='error',
-                                                                              message=message,
-                                                                              error_label='duplicate_ra',
-                                                                              located_in='item',
-                                                                              table=table)  # valid=False
-                                        jsonl_file.write(error)
+                                            error = self.helper.create_error_dict(validation_level='csv_wellformedness',
+                                                                                error_type='error',
+                                                                                message=message,
+                                                                                error_label='duplicate_ra',
+                                                                                located_in='item',
+                                                                                table=table)  # valid=False
+                                            jsonl_file.write(error)
 
                                     # Use structured object's ids attribute
                                     ids = item.ids
@@ -640,7 +642,7 @@ class Validator:
                         # Use structured object's parsed field
                         publishers = row_obj.publisher
                         if publishers:
-                            resp_agents = set()
+                            seen_pub_strs = set()
                             items = publishers  # Already parsed list of AgentItem objects
                             for item_idx, item in enumerate(items):
                                 # Check orphan RA ID using the raw string
@@ -669,9 +671,9 @@ class Validator:
                                     jsonl_file.write(error)
 
                                 else:
-                                    if item._raw not in resp_agents:
-                                        resp_agents.add(item._raw)
-                                    else:  # in-field duplication of the same publisher
+                                    if item._raw not in seen_pub_strs:
+                                        seen_pub_strs.add(item._raw)
+                                    else:  # in-field duplication of the same publisher (based on raw string exact match)
                                         table = {row_idx: {field: [i for i, v in enumerate(items) if v._raw == item._raw]}}
                                         message = messages['m26']
 
