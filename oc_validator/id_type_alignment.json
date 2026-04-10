@@ -456,6 +456,8 @@
     ],
     "retraction notice": [
         "doi",
+        "pmid",
+        "pmcid",
         "url",
         "openalex",
         "temp",
