@@ -22,7 +22,19 @@ from typing import Generator, Union
 
 
 class Wellformedness:
-    def __init__(self):
+    """
+    Provides well-formedness checks for every field of META-CSV and CITS-CSV rows.
+
+    Each method validates the format of a single field type (IDs, dates, venues,
+    pages, etc.) against the OpenCitations CSV specification.
+    """
+
+    def __init__(self) -> None:
+        """
+        Initialise the Wellformedness checker and load the ID-type alignment configuration.
+
+        :rtype: None
+        """
         self.helper = Helper()
         self.br_id_schemes = ['doi', 'issn', 'isbn', 'pmid', 'pmcid', 'url', 'wikidata', 'wikipedia', 'openalex', 'temp', 'local', 'omid', 'jid', 'arxiv']
         self.br_id_schemes_for_venues = ['doi', 'issn', 'isbn', 'pmid', 'pmcid', 'url', 'wikidata', 'wikipedia', 'openalex', 'omid', 'jid', 'arxiv']
@@ -31,12 +43,17 @@ class Wellformedness:
             self.id_type_dict = load(fa)
 
 
-    def wellformedness_br_id(self, id_element):
+    def wellformedness_br_id(self, id_element: str) -> bool:
         """
-        Validates the well-formedness of a single element inside the 'citing_id', 'cited_id' or 'id' field of a row,
-        checking its compliance with CITS-csv/META-CSV syntax.
-        :param id_element: str
-        :return: bool
+        Validate the well-formedness of a single bibliographic-resource ID element.
+
+        Checks that the element matches ``<scheme>:<value>`` where *scheme* is one
+        of the recognised bibliographic-resource ID schemes.
+
+        :param id_element: A single ID string (e.g. ``"doi:10.1234/abc"``).
+        :type id_element: str
+        :return: ``True`` if the element is well-formed, ``False`` otherwise.
+        :rtype: bool
         """
         id_pattern = fr'^({"|".join(self.br_id_schemes)}):\S+$'
         if match(id_pattern, id_element):
@@ -44,12 +61,17 @@ class Wellformedness:
         else:
             return False
 
-    def wellformedness_people_item(self, ra_item: str):
+    def wellformedness_people_item(self, ra_item: str) -> bool:
         """
-        Validates the well-formedness of an item inside the 'author' or 'editor' field of a row,
-        checking its compliance with META-CSV syntax.
-        :param ra_item: str
-        :return: bool
+        Validate the well-formedness of an item inside the ``author`` or ``editor`` field.
+
+        An item may be a name, a name followed by bracketed IDs, or just bracketed IDs,
+        conforming to the META-CSV syntax.
+
+        :param ra_item: The raw string of a single author/editor item.
+        :type ra_item: str
+        :return: ``True`` if well-formed, ``False`` otherwise.
+        :rtype: bool
         """
         #  todo: create stricter regex for not allowing characters that are likely to be illegal in a person's name/surname
         #   (e.g. digits, apostrophe, underscore, full-stop, etc.)
@@ -62,12 +84,17 @@ class Wellformedness:
         else:
             return False
 
-    def wellformedness_publisher_item(self, ra_item: str):
+    def wellformedness_publisher_item(self, ra_item: str) -> bool:
         """
-        Validates the well-formedness of an item inside the 'publisher' field of a row,
-        checking its compliance with META-CSV syntax.
-        :param ra_item: str
-        :return: bool
+        Validate the well-formedness of an item inside the ``publisher`` field.
+
+        Unlike :meth:`wellformedness_people_item`, this allows commas in the
+        name portion because publisher names may contain them.
+
+        :param ra_item: The raw string of a single publisher item.
+        :type ra_item: str
+        :return: ``True`` if well-formed, ``False`` otherwise.
+        :rtype: bool
         """
         outside_brackets_pub = r'(?:[^\s\[\]]+(?:\s[^\s\[\]]+)*)'
         inside_brackets = fr'\[({"|".join(self.ra_id_schemes)}):\S+(?:\s({"|".join(self.ra_id_schemes)}):\S+)*\]'
@@ -78,26 +105,34 @@ class Wellformedness:
         else:
             return False
 
-    def orphan_ra_id(self, ra_item: str):
+    def orphan_ra_id(self, ra_item: str) -> bool:
         """
-        Looks for possible ID of responsible agents ('author', 'publisher' or 'editor') that are NOT enclosed in
-        brackets, as they should be. Returns True if the input string is likely to contain one or more R.A. ID outside
-        square brackets.
-        :param ra_item: the item inside a R.A. field, as it is split by the '; ' separator.
-        :return:
-        bool, True if a match is found (the string is likely NOT well-formed), False if NO match is found.
+        Detect responsible-agent IDs that appear outside square brackets.
+
+        Returns ``True`` if the input string is likely to contain one or more
+        RA IDs not enclosed in ``[]``, which would indicate a formatting issue.
+
+        :param ra_item: The item inside an RA field, as split by the ``'; '`` separator.
+        :type ra_item: str
+        :return: ``True`` if an orphan ID is found (likely not well-formed),
+            ``False`` if no match is found.
+        :rtype: bool
         """
         if search(fr'({"|".join(self.ra_id_schemes)}):', sub(r'\[.*\]', '', ra_item)):
             return True
         else:
             return False
 
-    def wellformedness_date(self, date_field):
+    def wellformedness_date(self, date_field: str) -> bool:
         """
-        Validates the well-formedness of the content of the 'citing_publication_date', 'cited_publication_date'
-        or 'pub_date' field of a row, checking its compliance with CITS-csv/META-CSV syntax.
-        :param date_field: str
-        :return: bool
+        Validate the well-formedness of a date string.
+
+        Accepted formats are ``YYYY`` or ``YYYY-MM`` or ``YYYY-MM-DD``.
+
+        :param date_field: The raw date string from a date field.
+        :type date_field: str
+        :return: ``True`` if the date is well-formed, ``False`` otherwise.
+        :rtype: bool
         """
         date_pattern = r'^((?:\d{4}\-(?:0[1-9]|1[012])(?:\-(?:0[1-9]|[12][0-9]|3[01]))?)|(?:\d{4}))$'
         if match(date_pattern, date_field):
@@ -105,12 +140,17 @@ class Wellformedness:
         else:
             return False
 
-    def wellformedness_venue(self, venue_value: str):
+    def wellformedness_venue(self, venue_value: str) -> bool:
         """
-        Validates the well-formedness of the string inside the 'venue' field of a row,
-        checking its compliance with META-CSV syntax.
-        :param venue_value: str
-        :return: bool
+        Validate the well-formedness of the ``venue`` field value.
+
+        The venue may be a name, a name followed by bracketed IDs, or just
+        bracketed IDs, using bibliographic-resource ID schemes.
+
+        :param venue_value: The raw venue string.
+        :type venue_value: str
+        :return: ``True`` if well-formed, ``False`` otherwise.
+        :rtype: bool
         """
         outside_brackets_venue = r'(?:[^\s\[\]]+(?:\s[^\s\[\]]+)*)'
         # pmcids are not valid identifiers for 'venues'!
@@ -122,25 +162,33 @@ class Wellformedness:
         else:
             return False
 
-    def orphan_venue_id(self, venue_value: str):
+    def orphan_venue_id(self, venue_value: str) -> bool:
         """
-        Looks for IDs of BRs that might be a venue but are NOT enclosed in brackets, as they should be. Returns True if the
-        input string is likely to contain one or more BR ID outside square brackets.
-        :param venue_value: the value of the 'venue' field of a row.
-        :return:
-        bool, True if a match is found (the string is likely NOT well-formed), False if NO match is found.
+        Detect venue IDs that appear outside square brackets.
+
+        Returns ``True`` if the input string likely contains one or more
+        bibliographic-resource IDs not enclosed in ``[]``.
+
+        :param venue_value: The raw value of the ``venue`` field.
+        :type venue_value: str
+        :return: ``True`` if an orphan ID is found, ``False`` otherwise.
+        :rtype: bool
         """
         if search(fr'({"|".join(self.br_id_schemes_for_venues)}):', sub(r'\[.*\]', '', venue_value)):
             return True
         else:
             return False
 
-    def wellformedness_volume_issue(self, vi_value: str):
+    def wellformedness_volume_issue(self, vi_value: str) -> bool:
         """
-        Validates the well-formedness of the string inside the 'volume' or 'issue' field of a row,
-        checking its compliance with META-CSV syntax.
-        :param vi_value: str
-        :return: bool
+        Validate the well-formedness of a ``volume`` or ``issue`` field value.
+
+        The value must be one or more non-whitespace tokens separated by single spaces.
+
+        :param vi_value: The raw volume or issue string.
+        :type vi_value: str
+        :return: ``True`` if well-formed, ``False`` otherwise.
+        :rtype: bool
         """
         vi_pattern = r'^\S+(?:\s\S+)*$'
 
@@ -149,12 +197,17 @@ class Wellformedness:
         else:
             return False
 
-    def wellformedness_page(self, page_value: str):
+    def wellformedness_page(self, page_value: str) -> bool:
         """
-        Validates the well-formedness of the string inside the 'page' field of a row,
-        checking its compliance with META-CSV syntax.
-        :param page_value: str
-        :return: bool
+        Validate the well-formedness of the ``page`` field value.
+
+        Accepts numeric ranges (``1-10``), Roman numeral ranges (``i-x``),
+        and alphanumeric page ranges (``a1-b2``).
+
+        :param page_value: The raw page string.
+        :type page_value: str
+        :return: ``True`` if well-formed, ``False`` otherwise.
+        :rtype: bool
         """
         # todo: create stricter regex for roman numerals and valid intervals
         # NB: incorrect roman numerals and impossible ranges (e.g. 200-20) still validate!
@@ -171,12 +224,18 @@ class Wellformedness:
         else:
             return False
 
-    def check_page_interval(self, page_interval: str):
+    def check_page_interval(self, page_interval: str) -> bool:
         """
-        Validates the interval expressed in the 'page' field, verifying that the start page is smaller than the end page.
-        :param page_interval: the value of the 'page' field
-        :return: True if the interval is valid OR if it is impossibile to convert it to an integer. False if the interval
-            has been converted AND it is invalid, or if it does not need to be converted and it is invalid.
+        Validate that the page interval is logically consistent.
+
+        Verifies that the start page is less than or equal to the end page.
+        Handles Arabic numerals, Roman numerals, and alphanumeric strings.
+
+        :param page_interval: The value of the ``page`` field (e.g. ``"1-10"``).
+        :type page_interval: str
+        :return: ``True`` if the interval is valid or cannot be converted to
+            integers, ``False`` if the interval is definitively invalid.
+        :rtype: bool
         """
 
         both_num = page_interval.split('-')
@@ -197,12 +256,16 @@ class Wellformedness:
         else:
             return False
 
-    def wellformedness_type(self, type_value: str):
+    def wellformedness_type(self, type_value: str) -> bool:
         """
-        Validates the well-formedness of the string inside the 'type' field of a row,
-        checking its compliance with META-CSV syntax.
-        :param type_value: str
-        :return: bool
+        Validate the well-formedness of the ``type`` field value.
+
+        The type must be one of the keys in the ID-type alignment dictionary.
+
+        :param type_value: The raw type string.
+        :type type_value: str
+        :return: ``True`` if the type is recognised, ``False`` otherwise.
+        :rtype: bool
         """
 
         if type_value in self.id_type_dict.keys():
@@ -212,13 +275,18 @@ class Wellformedness:
 
     def get_missing_values(self, row: dict) -> dict:
         """
-        Checks whether a row has all required fields, depending on the specified 'type' of the resource, in case the
-        value of 'id' is not specified. If any required field value is missing, a dictionary for the row is created
-        which includes both the field(s) conditioning the requirement and the field(s) that are missing: The field
-        on which the requirement depends appear in the dictionary as <field name>:[0], while missing values appear as
-        <field name>:None.
-        :param row: (dict) a dict corresponding to a single row
-        :return missing: (dict) the dictionary locating
+        Check whether a row has all required fields for its resource type.
+
+        When the ``id`` field is empty or contains only ``temp:``/``local:`` IDs,
+        certain other fields become mandatory depending on the ``type`` value.
+        The returned dictionary maps field names to ``[0]`` (for fields that
+        condition the requirement) or ``None`` (for missing fields).
+
+        :param row: A dictionary representing a single CSV row.
+        :type row: dict
+        :return: Dictionary locating missing required fields. Empty if the row
+            satisfies all requirements.
+        :rtype: dict
         """
 
         # TODO: Consider using an external config file, as you do for checking id-type semantic alignment, since the list
@@ -397,20 +465,22 @@ class Wellformedness:
     #                                               table=table))
     #     return report
 
-    def get_duplicates_cits(self, uf: Union[LmdbUnionFind,InMemoryUnionFind], data_cache: Union[LmdbCache, InMemoryCache], messages) -> Generator:
+    def get_duplicates_cits(self, uf: Union[LmdbUnionFind, InMemoryUnionFind], data_cache: Union[LmdbCache, InMemoryCache], messages: dict) -> Generator:
         """
-        Find duplicate citations and self-citations in CITS-CSV using LMDB-backed storage.
+        Find duplicate citations and self-citations in a CITS-CSV document.
 
-        No large structures are held in RAM: the citation-occurrence map is
-        persisted in a temporary cache and iterated at the end to
-        detect duplicates.
+        No new large structures are held in RAM: the citation-occurrence map is
+        persisted in a temporary cache and iterated at the end to detect duplicates.
 
-        :param uf: ``LmdbUnionFind`` or ``InMemoryUnionFind`` (same API) populated with all IDs
-            encountered during the validation pass.
-        :param data_cache: ``LmdbCache`` or ``InMemoryCache`` (same API) mapping ``str(row_idx)`` to a
+        :param uf: Union-Find populated with all IDs encountered during validation.
+        :type uf: Union[LmdbUnionFind, InMemoryUnionFind]
+        :param data_cache: Cache mapping ``str(row_idx)`` to a
             ``(citing_id_str, cited_id_str)`` tuple for every row.
-        :param messages: Error-message template dict (from messages.yaml).
-        :return: Generator of error-dict objects (same format as before).
+        :type data_cache: Union[LmdbCache, InMemoryCache]
+        :param messages: Error-message template dictionary (from ``messages.yaml``).
+        :type messages: dict
+        :return: Generator of error-dict objects.
+        :rtype: Generator
         """
         # citation_map_cache: key = "citing_root\x00cited_root",
         #                     value = {row_idx: {'citing_id': [...], 'cited_id': [...]}}
@@ -531,20 +601,22 @@ class Wellformedness:
 
     #     return report
 
-    def get_duplicates_meta(self, uf: Union[LmdbUnionFind, InMemoryUnionFind], data_cache: Union[LmdbCache, InMemoryCache], messages) -> Generator:
+    def get_duplicates_meta(self, uf: Union[LmdbUnionFind, InMemoryUnionFind], data_cache: Union[LmdbCache, InMemoryCache], messages: dict) -> Generator:
         """
-        Find duplicate bibliographic entities in META-CSV using LMDB-backed storage.
+        Find duplicate bibliographic entities in a META-CSV document.
 
-        No large structures are held in RAM: the entity-occurrence map is
-        persisted in a temporary ``LmdbCache`` and iterated at the end to
-        detect duplicates.
+        No new large structures are held in RAM: the entity-occurrence map is
+        persisted in a temporary cache and iterated at the end to detect duplicates.
 
-        :param uf: ``LmdbUnionFind`` populated with all IDs
-            encountered during the validation pass.
-        :param data_cache: ``LmdbCache`` mapping ``str(row_idx)`` to the raw
-            ``'id'`` field string for every row.
-        :param messages: Error-message template dict (from messages.yaml).
-        :return: Generator of error-dict objects (same format as before).
+        :param uf: Union-Find populated with all IDs encountered during validation.
+        :type uf: Union[LmdbUnionFind, InMemoryUnionFind]
+        :param data_cache: Cache mapping ``str(row_idx)`` to the raw ``'id'``
+            field string for every row.
+        :type data_cache: Union[LmdbCache, InMemoryCache]
+        :param messages: Error-message template dictionary (from ``messages.yaml``).
+        :type messages: dict
+        :return: Generator of error-dict objects.
+        :rtype: Generator
         """
         # meta_map_cache: key = entity root string,
         #                 value = {row_idx: {'id': [0, 1, ...]}}

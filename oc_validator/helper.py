@@ -14,50 +14,77 @@
 
 from collections import defaultdict
 from csv import field_size_limit, DictReader
+from typing import Generator, Iterator, Optional
 import json
 
 
 class UnionFind:
-    def __init__(self):
+    """Union-Find (Disjoint Set Union) data structure for grouping related identifiers."""
+
+    def __init__(self) -> None:
+        """
+        Initialise an empty Union-Find structure.
+
+        :rtype: None
+        """
         self.parent = dict()
 
-    def find(self, x):
+    def find(self, x: str) -> str:
+        """
+        Return the root of the component containing *x*.
+
+        If *x* has never been seen before it is registered as its own root.
+        Path compression is applied on every lookup.
+
+        :param x: Element identifier.
+        :type x: str
+        :return: Root identifier of the component.
+        :rtype: str
+        """
         if x not in self.parent:
             self.parent[x] = x
         if self.parent[x] != x:
             self.parent[x] = self.find(self.parent[x])  # Path compression
         return self.parent[x]
 
-    def union(self, x, y):
+    def union(self, x: str, y: str) -> None:
+        """
+        Merge the components containing *x* and *y*.
+
+        The root of *x* is made a child of the root of *y*.
+
+        :param x: First element.
+        :type x: str
+        :param y: Second element.
+        :type y: str
+        :rtype: None
+        """
         self.parent[self.find(x)] = self.find(y)
 
 class Helper:
-    def __init__(self):  # todo: è necessario mettere init?
+    """Container for utility functions used across the validation pipeline."""
+
+    def __init__(self) -> None:
+        """
+        Initialise the Helper.
+
+        :rtype: None
+        """
         self.descr = 'contains helper functions'
 
-    # # THIS IS THE OLD FUNCTION TO GROUP IDS, KEPT HERE FOR REFERENCE
-    # def group_ids(self, id_groups: list):
-    #     """
-    #     Divides identifiers in a list of sets, where each set corresponds to a bibliographic entity.
-    #     Takes in input a list of sets where each set represent the field 'citing_id', 'cited_id' or 'id' of a single row.
-    #     Two IDs are considered to be associated to the same bibliographic entity if they occur together in a set at
-    #     least once.
-    #     :param id_groups: list containing sets of formally valid IDs
-    #     :return: list of sets grouping the IDs associated to the same bibliographic entity
-    #     """
-    #     old_len = len(id_groups) + 1
-    #     while len(id_groups) < old_len:
-    #         old_len = len(id_groups)
-    #         for i in range(len(id_groups)):
-    #             for j in range(i + 1, len(id_groups)):
-    #                 if len(id_groups[i] & id_groups[j]):
-    #                     id_groups[i] = id_groups[i] | id_groups[j]
-    #                     id_groups[j] = set()
-    #         id_groups = [id_groups[i] for i in range(len(id_groups)) if id_groups[i] != set()]
-
-    #     return id_groups
-
     def group_ids(self, id_groups: list[set]) -> list[set]:
+        """
+        Group identifiers that co-occur in the same row into connected components.
+
+        Uses a Union-Find algorithm so that two IDs are considered to belong to the
+        same bibliographic entity if they appear together in at least one row.
+
+        :param id_groups: List of sets, where each set contains the identifiers
+            from a single row field (e.g. ``id``, ``citing_id``).
+        :type id_groups: list[set]
+        :return: List of sets, each grouping the IDs of the same entity.
+        :rtype: list[set]
+        """
 
         uf = UnionFind()
 
@@ -77,17 +104,30 @@ class Helper:
         return list(components.values())
 
     def create_error_dict(self, validation_level: str, error_type: str, message: str, error_label: str, located_in: str,
-                          table: dict, valid=False):
+                          table: dict, valid: bool = False) -> dict:
         """
-        Creates a dictionary representing the error, i.e. the negative output of a validation function.
-        :param validation_level: one of the following values: "csv_wellformedness", "external_syntax", "semantic".
-        :param error_type: one of the following values: "error", "warning".
-        :param error_label: a machine-readable label, connected to one and only one validating function.
-        :param message: the message for the user.
-        :param located_in: the type of the table's area where the error is located; one of the following values: "row, "field", "item".
-        :param table: the tree representing the exact location of all the elements that make the error.
-        :param valid = flag for specifying whether the data raising the error is still valid or not. Defaults to False, meaning that the error makes the whole document invalid.
-        :return: the details of a specific error, as it is detected by executing a validation function.
+        Create a dictionary representing a validation error or warning.
+
+        :param validation_level: One of ``"csv_wellformedness"``, ``"external_syntax"``,
+            ``"existence"``, or ``"semantic"``.
+        :type validation_level: str
+        :param error_type: One of ``"error"`` or ``"warning"``.
+        :type error_type: str
+        :param message: Human-readable error description.
+        :type message: str
+        :param error_label: Machine-readable label uniquely connected to one validation check.
+        :type error_label: str
+        :param located_in: Granularity of the error location — one of ``"row"``,
+            ``"field"``, or ``"item"``.
+        :type located_in: str
+        :param table: Tree structure pinpointing the exact position of all elements
+            involved in the error.
+        :type table: dict
+        :param valid: Whether the data is still considered valid despite the issue.
+            Defaults to ``False``.
+        :type valid: bool
+        :return: Error dictionary consumable by the report writer.
+        :rtype: dict
         """
 
         position = {
@@ -100,76 +140,25 @@ class Helper:
             'error_type': error_type,
             'error_label': error_label,
             'valid': valid,
-            # todo: consider removing 'valid' if for all warnings 'valid'=True and for all errors 'valid'=False
             'message': message,
             'position': position
         }
 
         return result
 
-    # def create_validation_summary(self, error_report):
-    #     """
-    #     Creates a natural language summary of the validation error report.
-    #     :param error_report:
-    #     :return:
-    #     """
 
-    #     # Count the number of instances of each error label
-    #     error_counts = {}
-    #     for error in error_report:
-    #         label = error['error_label']
-    #         error_counts[label] = error_counts.get(label, 0) + 1
-
-    #     label_report = []
-    #     for label, count in error_counts.items():
-    #         errors_with_label = [e for e in error_report if e['error_label'] == label]
-    #         explanation = errors_with_label[0]['message']  # all errors w/ a given label have the same message
-    #         instance_details = []
-    #         count_summary = f"There are {count} {label} issues in the document." if count > 1 else f"There is {count} {label} issue in the document. "
-    #         for err_idx, error in enumerate(errors_with_label):
-    #             tree = error['position']['table']
-    #             all_locs = []
-    #             for row_node_pos, row_node_value in tree.items():
-    #                 involved_row = row_node_pos
-    #                 for field_node_name, field_node_value in row_node_value.items():
-    #                     involved_field = field_node_name
-    #                     involved_items = field_node_value
-    #                     single_node_pos = f"row {involved_row}, field {involved_field}, and items in position {involved_items}"
-    #                     all_locs.append(single_node_pos)
-
-    #             if len(all_locs) > 1:
-    #                 location = f""
-    #                 pointer = 0
-    #                 while pointer < len(all_locs):
-    #                     location = location + all_locs[pointer] + "; "
-    #                     pointer += 1
-    #                 else:
-    #                     location = location[:-2]
-    #             else:
-    #                 location = f"{all_locs[0]}"
-
-    #             # Construct a detailed message for each error
-    #             if len(errors_with_label) > 1:
-    #                 detail = f"- {error['error_type']} {err_idx + 1} involves: {location}."
-    #             else:
-    #                 detail = f"- The {error['error_type']} involves: {location}."
-    #             instance_details.append(detail)
-
-    #         # Combine the summary and detailed messages for the current error label
-    #         error_label_summary = count_summary + "\n" + explanation + "\n" + "\n".join(instance_details)
-    #         label_report.append(error_label_summary)
-
-    #     # Combine all the error messages into a single string
-    #     report = "\n\n".join(label_report)
-    #     return report
-    
-
-    def create_validation_summary_stream(self, json_fp):
+    def create_validation_summary_stream(self, json_fp: str) -> Generator[str, None, None]:
         """
-        Streams a natural language summary of the validation error report.
+        Stream a natural-language summary of the validation error report.
 
-        :param json_fp: Path to the JSON file containing the validation error report
-        :return: generator yielding lines (strings)
+        Performs two passes over the JSON-Lines file: the first counts errors
+        per label and stores the explanation text, the second yields formatted
+        lines grouped by error label.
+
+        :param json_fp: Path to the JSON-Lines file containing the validation error report.
+        :type json_fp: str
+        :return: Generator yielding lines of the summary.
+        :rtype: Generator[str, None, None]
         """
 
         # ---- FIRST PASS: count errors per label + store explanation ----
@@ -240,16 +229,34 @@ class Helper:
 class CSVStreamReader:
     """
     A streamable CSV reader that yields rows one at a time, allowing for memory-efficient
-    processing of large CSV files. Supports multiple passes by reopening the file.
+    processing of large CSV files.
+
+    Supports multiple passes by reopening the file. The delimiter is auto-detected
+    from the first rows (tries comma, semicolon, and tab).
     """
-    def __init__(self, csv_fp):
+    def __init__(self, csv_fp: str) -> None:
+        """
+        Initialise the reader and auto-detect the CSV delimiter and field names.
+
+        :param csv_fp: Path to the CSV file to read.
+        :type csv_fp: str
+        :rtype: None
+        """
         self.csv_fp = csv_fp
-        self._delimiter = None
-        self._fieldnames = None
+        self._delimiter: Optional[str] = None
+        self._fieldnames: Optional[list[str]] = None
         self._detect_delimiter_and_fieldnames()
-    
-    def _detect_delimiter_and_fieldnames(self):
-        """Detect the CSV delimiter and fieldnames from the first few rows."""
+
+    def _detect_delimiter_and_fieldnames(self) -> None:
+        """
+        Detect the CSV delimiter and field names from the first rows.
+
+        Tries ``','``, ``';'``, and ``'\\t'`` in order and selects the first one
+        that produces a row with more than one column.
+
+        :raises ValueError: if no valid delimiter can be determined.
+        :rtype: None
+        """
         field_size_limit(100000000)  # sets 100 MB as size limit for parsing larger csv fields
         for delimiter in [',', ';', '\t']:
             with open(self.csv_fp, newline='', encoding='utf-8') as f:
@@ -264,70 +271,143 @@ class CSVStreamReader:
                 except StopIteration:
                     continue  # Empty file, try next delimiter
         raise ValueError("Could not detect CSV delimiter")
-    
-    def stream(self):
+
+    def stream(self) -> Iterator[dict]:
         """
         Stream rows from the CSV file one at a time.
-        Yields dictionaries representing each row.
-        
-        This is a generator that can be used in for loops.
+
+        Each call reopens the file, so the generator can be consumed multiple
+        times for separate validation passes.
+
+        :return: Iterator of row dictionaries (as returned by ``csv.DictReader``).
+        :rtype: Iterator[dict]
         """
         field_size_limit(100000000)
         with open(self.csv_fp, newline='', encoding='utf-8') as f:
             reader = DictReader(f, delimiter=self._delimiter)  # if fieldnames is specified, DictReader interprets the first row as data, not header!
             for row in reader:
                 yield row
-    
-    def __iter__(self):
-        """Make the CSVStreamReader directly iterable."""
+
+    def __iter__(self) -> Iterator[dict]:
+        """
+        Make the reader directly iterable.
+
+        :return: Row iterator (delegates to :meth:`stream`).
+        :rtype: Iterator[dict]
+        """
         return self.stream()
 
 
 class JSONLStreamIO:
-    def __init__(self, jsonl_fp, mode='r'):
+    """
+    Context manager for reading and writing JSON-Lines (JSONL) files.
+
+    Each line in the file is a separate JSON object. Supports both read and
+    write modes and can be used as an iterator for line-by-line consumption.
+    """
+    def __init__(self, jsonl_fp: str, mode: str = 'r') -> None:
+        """
+        Initialise the JSON-Lines handler.
+
+        :param jsonl_fp: Path to the JSON-Lines file.
+        :type jsonl_fp: str
+        :param mode: File open mode (``'r'``, ``'w'``, or ``'a'``).
+            Defaults to ``'r'``.
+        :type mode: str
+        :rtype: None
+        """
         self.jsonl_fp = jsonl_fp
         self.mode = mode
         self._file = None
 
     def __enter__(self):
+        """
+        Open the underlying file and return this instance.
+
+        :return: The :class:`JSONLStreamIO` instance.
+        :rtype: JSONLStreamIO
+        """
         self._file = open(self.jsonl_fp, self.mode, encoding='utf-8')
         return self
 
     def __exit__(self, exc_type, exc_val, exc_tb):
+        """
+        Close the underlying file on context exit.
+
+        :rtype: None
+        """
         if self._file:
             self._file.close()
 
-    def is_empty(self):
+    def is_empty(self) -> bool:
+        """
+        Check whether the JSON-Lines file is empty or contains only blank lines.
+
+        :return: ``True`` if the file has no non-empty JSON lines, ``False`` otherwise.
+        :rtype: bool
+        """
         with open(self.jsonl_fp, 'r', encoding='utf-8') as f:
             for line in f:
                 if json.loads(line.strip()):
                     return False
         return True
 
-    def read(self):
+    def read(self) -> Iterator[dict]:
+        """
+        Read the JSON-Lines file, yielding one parsed JSON object per line.
+
+        :return: Iterator of dictionaries parsed from each line.
+        :rtype: Iterator[dict]
+        """
         with open(self.jsonl_fp, 'r', encoding='utf-8') as f:
             for line in f:
                 yield json.loads(line.strip())
 
-    def __iter__(self):
+    def __iter__(self) -> Iterator[dict]:
+        """
+        Make the handler directly iterable (delegates to :meth:`read`).
+
+        :return: Iterator of parsed JSON objects.
+        :rtype: Iterator[dict]
+        """
         return self.read()
 
-    def write(self, json_obj):
+    def write(self, json_obj: dict) -> None:
+        """
+        Write a JSON object as a single line to the file.
+
+        The file must already be open via the context manager in ``'w'`` or ``'a'`` mode.
+
+        :param json_obj: JSON-serialisable object to write.
+        :type json_obj: dict
+        :raises ValueError: if the file has not been opened via the context manager.
+        :rtype: None
+        """
         if self._file is None:
             raise ValueError("File not open. Use context manager with mode='a' or 'w'.")
         self._file.write(json.dumps(json_obj) + '\n')
 
-    def flush(self):
+    def flush(self) -> None:
+        """
+        Flush the underlying file buffer.
+
+        :rtype: None
+        """
         if self._file:
             self._file.flush()
 
-def read_csv(csv_fp):
+def read_csv(csv_fp: str) -> list[dict]:
     """
-    Legacy function kept for backward compatibility.
-    For new code, use CSVStreamReader for memory-efficient streaming.
-    
-    Note: This function loads the entire file into memory and should not be
-    used for large files. Consider using CSVStreamReader instead.
+    Read an entire CSV file into memory.
+
+    .. deprecated::
+        Use :class:`CSVStreamReader` for memory-efficient streaming instead.
+
+    :param csv_fp: Path to the CSV file.
+    :type csv_fp: str
+    :return: List of row dictionaries.
+    :rtype: list[dict]
+    :raises ValueError: if no valid delimiter can be determined.
     """
     field_size_limit(100000000)  # sets 100 MB as size limit for parsing larger csv fields
     for delimiter in [',', ';', '\t']:

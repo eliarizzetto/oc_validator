@@ -47,8 +47,14 @@ class LmdbCache:
 
         self._is_open = False
     
-    def open(self):
-        """Open the LMDB environment."""
+    def open(self) -> None:
+        """
+        Open the LMDB environment.
+
+        No-op if the environment is already open.
+
+        :rtype: None
+        """
         if self._is_open:
             return
         
@@ -63,8 +69,12 @@ class LmdbCache:
         )
         self._is_open = True
     
-    def close(self):
-        """Close the LMDB environment and remove its dedicated temporary directory."""
+    def close(self) -> None:
+        """
+        Close the LMDB environment and remove its dedicated temporary directory.
+
+        :rtype: None
+        """
         if self._env is not None:
             self._env.close()
             self._env = None
@@ -76,23 +86,38 @@ class LmdbCache:
             self._temp_dir = None
     
     def __enter__(self):
+        """
+        Open the environment and return this instance for use in a ``with`` block.
+
+        :return: The :class:`LmdbCache` instance.
+        :rtype: LmdbCache
+        """
         self.open()
         return self
-    
+
     def __exit__(self, exc_type, exc_val, exc_tb):
+        """
+        Close the environment on context exit.
+
+        :rtype: None
+        """
         self.close()
         return False
-    
+
     def __del__(self):
-        """Ensure cleanup on deletion."""
+        """Ensure cleanup on garbage collection."""
         self.close()
     
-    def put(self, key: str, value: Any):
+    def put(self, key: str, value: Any) -> None:
         """
         Store a key-value pair.
-        
-        :param key: String key
-        :param value: Any picklable value
+
+        :param key: String key.
+        :type key: str
+        :param value: Any picklable value.
+        :type value: Any
+        :raises RuntimeError: if the cache is not open.
+        :rtype: None
         """
         if not self._is_open:
             raise RuntimeError("LMDB cache is not open. Use context manager or call open() first.")
@@ -106,10 +131,14 @@ class LmdbCache:
     def get(self, key: str, default: Any = None) -> Any:
         """
         Retrieve a value by key.
-        
-        :param key: String key
-        :param default: Default value if key not found
-        :return: The stored value or default
+
+        :param key: String key.
+        :type key: str
+        :param default: Default value if the key is not found. Defaults to ``None``.
+        :type default: Any
+        :return: The stored value, or *default* if the key is absent.
+        :rtype: Any
+        :raises RuntimeError: if the cache is not open.
         """
         if not self._is_open:
             raise RuntimeError("LMDB cache is not open. Use context manager or call open() first.")
@@ -120,12 +149,28 @@ class LmdbCache:
                 return default
             return pickle.loads(value)
     
-    def __setitem__(self, key: str, value: Any):
-        """Allow dict-like assignment: cache[key] = value"""
+    def __setitem__(self, key: str, value: Any) -> None:
+        """
+        Allow dict-like assignment: ``cache[key] = value``.
+
+        :param key: String key.
+        :type key: str
+        :param value: Any picklable value.
+        :type value: Any
+        :rtype: None
+        """
         self.put(key, value)
     
     def __getitem__(self, key: str) -> Any:
-        """Allow dict-like access: value = cache[key]"""
+        """
+        Allow dict-like access: ``value = cache[key]``.
+
+        :param key: String key.
+        :type key: str
+        :return: The stored value.
+        :rtype: Any
+        :raises KeyError: if the key is not found.
+        """
         value = self.get(key)
         if value is None:
             raise KeyError(f"Key '{key}' not found in cache")
@@ -143,11 +188,14 @@ class LmdbCache:
         with self._env.begin(write=False) as txn:
             return txn.get(key.encode('utf-8')) is not None
     
-    def delete(self, key: str):
+    def delete(self, key: str) -> None:
         """
         Delete a key-value pair.
-        
-        :param key: String key to delete
+
+        :param key: String key to delete.
+        :type key: str
+        :raises RuntimeError: if the cache is not open.
+        :rtype: None
         """
         if not self._is_open:
             raise RuntimeError("LMDB cache is not open. Use context manager or call open() first.")
@@ -155,12 +203,23 @@ class LmdbCache:
         with self._env.begin(write=True) as txn:
             txn.delete(key.encode('utf-8'))
     
-    def __delitem__(self, key: str):
-        """Allow dict-like deletion: del cache[key]"""
+    def __delitem__(self, key: str) -> None:
+        """
+        Allow dict-like deletion: ``del cache[key]``.
+
+        :param key: String key to delete.
+        :type key: str
+        :rtype: None
+        """
         self.delete(key)
     
     def keys(self) -> Iterator[str]:
-        """Iterate over all keys in the cache."""
+        """
+        Iterate over all keys in the cache.
+
+        :return: Iterator of key strings.
+        :rtype: Iterator[str]
+        """
         if not self._is_open:
             raise RuntimeError("LMDB cache is not open. Use context manager or call open() first.")
         
@@ -170,7 +229,12 @@ class LmdbCache:
                 yield key_bytes.decode('utf-8')
     
     def values(self) -> Iterator[Any]:
-        """Iterate over all values in the cache."""
+        """
+        Iterate over all values in the cache.
+
+        :return: Iterator of deserialized values.
+        :rtype: Iterator[Any]
+        """
         if not self._is_open:
             raise RuntimeError("LMDB cache is not open. Use context manager or call open() first.")
         
@@ -180,7 +244,12 @@ class LmdbCache:
                 yield pickle.loads(value_bytes)
     
     def items(self) -> Iterator[tuple[str, Any]]:
-        """Iterate over all key-value pairs in the cache."""
+        """
+        Iterate over all key-value pairs in the cache.
+
+        :return: Iterator of ``(key, value)`` tuples.
+        :rtype: Iterator[tuple[str, Any]]
+        """
         if not self._is_open:
             raise RuntimeError("LMDB cache is not open. Use context manager or call open() first.")
         
@@ -190,15 +259,25 @@ class LmdbCache:
                 yield (key_bytes.decode('utf-8'), pickle.loads(value_bytes))
     
     def __len__(self) -> int:
-        """Return the number of items in the cache."""
+        """
+        Return the number of items in the cache.
+
+        :return: Entry count.
+        :rtype: int
+        """
         if not self._is_open:
             raise RuntimeError("LMDB cache is not open. Use context manager or call open() first.")
         
         with self._env.begin(write=False) as txn:
             return txn.stat()['entries']
     
-    def clear(self):
-        """Remove all items from the cache."""
+    def clear(self) -> None:
+        """
+        Remove all items from the cache.
+
+        :raises RuntimeError: if the cache is not open.
+        :rtype: None
+        """
         if not self._is_open:
             raise RuntimeError("LMDB cache is not open. Use context manager or call open() first.")
         
@@ -208,7 +287,12 @@ class LmdbCache:
                 txn.delete(key)
     
     def __bool__(self) -> bool:
-        """Return True if cache is not empty."""
+        """
+        Return ``True`` if the cache contains at least one item.
+
+        :return: Boolean indicating whether the cache is non-empty.
+        :rtype: bool
+        """
         return len(self) > 0
 
 
@@ -232,66 +316,145 @@ class InMemoryCache:
         self._data: dict = {}
         self._is_open = True
     
-    def open(self):
-        """No-op for in-memory cache."""
+    def open(self) -> None:
+        """
+        No-op for in-memory cache. Sets the internal open flag.
+
+        :rtype: None
+        """
         self._is_open = True
     
-    def close(self):
-        """No-op for in-memory cache."""
+    def close(self) -> None:
+        """
+        No-op for in-memory cache. Clears the internal open flag.
+
+        :rtype: None
+        """
         self._is_open = False
     
     def __enter__(self):
+        """
+        Open the cache and return this instance for use in a ``with`` block.
+
+        :return: The :class:`InMemoryCache` instance.
+        :rtype: InMemoryCache
+        """
         self.open()
         return self
-    
+
     def __exit__(self, exc_type, exc_val, exc_tb):
+        """
+        Close the cache on context exit.
+
+        :rtype: None
+        """
         self.close()
         return False
-    
-    def put(self, key: str, value: Any):
-        """Store a key-value pair."""
+
+    def put(self, key: str, value: Any) -> None:
+        """
+        Store a key-value pair.
+
+        :param key: String key.
+        :type key: str
+        :param value: Any value.
+        :type value: Any
+        :rtype: None
+        """
         self._data[key] = value
     
     def get(self, key: str, default: Any = None) -> Any:
-        """Retrieve a value by key."""
+        """
+        Retrieve a value by key.
+
+        :param key: String key.
+        :type key: str
+        :param default: Default value if the key is not found. Defaults to ``None``.
+        :type default: Any
+        :return: The stored value, or *default* if the key is absent.
+        :rtype: Any
+        """
         return self._data.get(key, default)
     
-    def __setitem__(self, key: str, value: Any):
+    def __setitem__(self, key: str, value: Any) -> None:
+        """Allow dict-like assignment: ``cache[key] = value``."""
         self.put(key, value)
-    
+
     def __getitem__(self, key: str) -> Any:
+        """
+        Allow dict-like access: ``value = cache[key]``.
+
+        :raises KeyError: if the key is not found.
+        """
         if key not in self._data:
             raise KeyError(f"Key '{key}' not found in cache")
         return self._data[key]
     
     def __contains__(self, key: str) -> bool:
+        """Return ``True`` if *key* is in the cache."""
         return key in self._data
-    
-    def delete(self, key: str):
-        """Delete a key-value pair."""
+
+    def delete(self, key: str) -> None:
+        """
+        Delete a key-value pair.
+
+        :param key: String key to delete.
+        :type key: str
+        :rtype: None
+        """
         if key in self._data:
             del self._data[key]
-    
-    def __delitem__(self, key: str):
+
+    def __delitem__(self, key: str) -> None:
+        """Allow dict-like deletion: ``del cache[key]``."""
         self.delete(key)
-    
+
     def keys(self) -> Iterator[str]:
+        """
+        Iterate over all keys.
+
+        :return: Iterator of key strings.
+        :rtype: Iterator[str]
+        """
         return iter(self._data.keys())
-    
+
     def values(self) -> Iterator[Any]:
+        """
+        Iterate over all values.
+
+        :return: Iterator of values.
+        :rtype: Iterator[Any]
+        """
         return iter(self._data.values())
-    
+
     def items(self) -> Iterator[tuple[str, Any]]:
+        """
+        Iterate over all key-value pairs.
+
+        :return: Iterator of ``(key, value)`` tuples.
+        :rtype: Iterator[tuple[str, Any]]
+        """
         return iter(self._data.items())
-    
+
     def __len__(self) -> int:
+        """
+        Return the number of items in the cache.
+
+        :return: Entry count.
+        :rtype: int
+        """
         return len(self._data)
-    
-    def clear(self):
-        """Remove all items from the cache."""
+
+    def clear(self) -> None:
+        """
+        Remove all items from the cache.
+
+        :rtype: None
+        """
         self._data.clear()
-    
+
     def __bool__(self) -> bool:
+        """Return ``True`` if the cache contains at least one item."""
         return bool(self._data)
 
 

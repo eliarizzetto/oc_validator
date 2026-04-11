@@ -13,17 +13,33 @@
 # SOFTWARE.
 
 class Semantics:
-    def __init__(self):
+    """
+    Validates the semantic compatibility between identifier schemes and
+    resource types in META-CSV rows.
+    """
+
+    def __init__(self) -> None:
+        """
+        Initialise the Semantics checker.
+
+        :rtype: None
+        """
         pass
 
     def check_semantics(self, row: dict, alignment: dict) -> dict:
         """
-        Checks if all the IDs specified in 'id' are compatible with the value of 'type'.
-        Return a dictionary with the fields and items involved in the error, or an empty
-        dictionary if no error was found.
-        :param row: (dict) the row in the table
-        :param alignment: (dict) the possible associations between a type and a set of IDs
-        :return: (dict)
+        Check whether all identifiers in the ``id`` field are compatible with the ``type`` value.
+
+        Uses an alignment dictionary that maps each resource type to the set of
+        allowed identifier schemes.
+
+        :param row: A dictionary representing a single CSV row.
+        :type row: dict
+        :param alignment: Mapping from resource type to the set of accepted ID schemes.
+        :type alignment: dict
+        :return: Dictionary locating incompatible fields and items, or an empty
+            dictionary if no semantic errors were found.
+        :rtype: dict
         """
         invalid_row = {}
         row_type = row['type']

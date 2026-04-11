@@ -13,16 +13,20 @@
 # SOFTWARE.
 
 import logging
+from typing import Optional
 
 logger = logging.getLogger('oc_validator')
 
 
-def configure_logging(verbose: bool = False, log_file: str = None):
+def configure_logging(verbose: bool = False, log_file: Optional[str] = None) -> None:
     """
     Configure logging for the oc_validator package.
 
     :param verbose: If True, set level to INFO; otherwise WARNING.
+    :type verbose: bool
     :param log_file: If provided, log to this file path instead of the terminal.
+    :type log_file: Optional[str]
+    :rtype: None
     """
     level = logging.INFO if verbose else logging.WARNING
     formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')

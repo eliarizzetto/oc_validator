@@ -4,95 +4,133 @@ from re import finditer
 
 class AgentItem:
     """
-    Represents a single agent (author/editor/publisher) with name and IDs.
+    Represents a single agent (author, editor, or publisher) with a name and
+    zero or more responsible-agent identifiers.
     """
-    def __init__(self, raw: str):
+    def __init__(self, raw: str) -> None:
+        """
+        Parse a raw agent string into name and IDs.
+
+        :param raw: The raw agent string (e.g. ``"Smith, John [orcid:0000-0001]"``).
+        :type raw: str
+        :rtype: None
+        """
         self._raw = raw
         self.name: str = ""
         self.ids: List[str] = []
         self._parse(raw)
-    
-    def _parse(self, raw: str):
+
+    def _parse(self, raw: str) -> None:
         """
-        Parse the agent item string.
-        Expected format: "Name, Surname [id1:xxx id2:yyy]" or just "Name, Surname" or just "[id1:xxx]"
+        Extract name and bracketed IDs from the raw string.
+
+        :param raw: The raw agent string.
+        :type raw: str
+        :rtype: None
         """
         # Extract IDs from brackets
         self.ids = [m.group() for m in finditer(r'((?:crossref|orcid|viaf|wikidata|ror|omid):\S+)(?=\s|\])', raw)]
-        
+
         # Extract name part (everything before first '[' or the whole string if no brackets)
         bracket_pos = raw.find('[')
         if bracket_pos != -1:
             self.name = raw[:bracket_pos].strip()
         else:
             self.name = raw.strip()
-    
+
     def to_dict(self) -> Dict:
         """
-        Serialize AgentItem to dictionary.
-        
-        :return: Dictionary representation of the agent item
+        Serialize the agent item to a dictionary.
+
+        :return: Dictionary with ``"name"`` and ``"ids"`` keys.
+        :rtype: Dict
         """
         return {
             "name": self.name,
             "ids": self.ids
         }
-    
-    def __repr__(self):
+
+    def __repr__(self) -> str:
+        """Return an unambiguous string representation of the agent item."""
         return f"AgentItem(name='{self.name}', ids={self.ids})"
-    
-    def __str__(self):
+
+    def __str__(self) -> str:
+        """Return the original raw string."""
         return self._raw
 
 
 class VenueInfo:
     """
-    Represents venue information with name and IDs.
+    Represents venue information with a name and zero or more bibliographic-resource
+    identifiers.
     """
-    def __init__(self, raw: str):
+    def __init__(self, raw: str) -> None:
+        """
+        Parse a raw venue string into name and IDs.
+
+        :param raw: The raw venue string (e.g. ``"Nature [issn:1234-5678]"``).
+        :type raw: str
+        :rtype: None
+        """
         self._raw = raw
         self.name: str = ""
         self.ids: List[str] = []
         self._parse(raw)
-    
-    def _parse(self, raw: str):
+
+    def _parse(self, raw: str) -> None:
         """
-        Parse the venue string.
-        Expected format: "Venue Name [id1:xxx id2:yyy]" or just "Venue Name" or just "[id1:xxx]"
+        Extract name and bracketed IDs from the raw venue string.
+
+        :param raw: The raw venue string.
+        :type raw: str
+        :rtype: None
         """
         # Extract IDs from brackets (using venue ID schemes)
         self.ids = [m.group() for m in finditer(r'((?:doi|issn|isbn|url|wikidata|wikipedia|openalex|omid|jid|arxiv|pmid):\S+)(?=\s|\])', raw)]
-        
+
         # Extract name part (everything before first '[' or the whole string if no brackets)
         bracket_pos = raw.find('[')
         if bracket_pos != -1:
             self.name = raw[:bracket_pos].strip()
         else:
             self.name = raw.strip()
-    
+
     def to_dict(self) -> Dict:
         """
-        Serialize VenueInfo to dictionary.
-        
-        :return: Dictionary representation of the venue info
+        Serialize the venue info to a dictionary.
+
+        :return: Dictionary with ``"name"`` and ``"ids"`` keys.
+        :rtype: Dict
         """
         return {
             "name": self.name,
             "ids": self.ids
         }
-    
-    def __repr__(self):
+
+    def __repr__(self) -> str:
+        """Return an unambiguous string representation of the venue info."""
         return f"VenueInfo(name='{self.name}', ids={self.ids})"
 
-    def __str__(self):
+    def __str__(self) -> str:
+        """Return the original raw string."""
         return self._raw
 
 
 class MetadataRow:
     """
-    Structured representation of a metadata CSV row.
+    Structured representation of a metadata (META-CSV) row.
+
+    Each field is parsed into its appropriate type (lists of strings for IDs,
+    :class:`AgentItem` lists for author/editor/publisher, etc.).
     """
-    def __init__(self, raw_row: Dict[str, str]):
+    def __init__(self, raw_row: Dict[str, str]) -> None:
+        """
+        Parse a raw CSV row dictionary into a structured MetadataRow.
+
+        :param raw_row: Dictionary mapping column names to raw string values.
+        :type raw_row: Dict[str, str]
+        :rtype: None
+        """
         self._raw = raw_row.copy()
         self.id: List[str] = self._parse_id_field(raw_row.get('id', ''))
         self.title: Optional[str] = raw_row.get('title')
@@ -105,31 +143,57 @@ class MetadataRow:
         self.type: Optional[str] = raw_row.get('type')
         self.publisher: Optional[List[AgentItem]] = self._parse_agent_field(raw_row.get('publisher'))
         self.editor: Optional[List[AgentItem]] = self._parse_agent_field(raw_row.get('editor'))
-    
+
     def _parse_id_field(self, value: str) -> List[str]:
-        """Parse ID field (space-separated list)."""
+        """
+        Parse a space-separated ID field into a list of strings.
+
+        :param value: Raw space-separated ID string.
+        :type value: str
+        :return: List of individual ID strings, or an empty list if blank.
+        :rtype: List[str]
+        """
         if not value:
             return []
         return value.split(' ')
-    
+
     def _parse_agent_field(self, value: Optional[str]) -> Optional[List[AgentItem]]:
-        """Parse agent field (`; `-separated list of AgentItem)."""
+        """
+        Parse a semicolon-separated agent field into a list of AgentItem objects.
+
+        :param value: Raw agent field string, or ``None`` if empty.
+        :type value: Optional[str]
+        :return: List of :class:`AgentItem` instances, or ``None`` if blank.
+        :rtype: Optional[List[AgentItem]]
+        """
         if not value:
             return None
         items = value.split('; ')
         return [AgentItem(item) for item in items]
-    
+
     def _parse_venue_field(self, value: Optional[str]) -> Optional[VenueInfo]:
-        """Parse venue field (VenueInfo)."""
+        """
+        Parse the venue field into a VenueInfo object.
+
+        :param value: Raw venue string, or ``None`` if empty.
+        :type value: Optional[str]
+        :return: :class:`VenueInfo` instance, or ``None`` if blank.
+        :rtype: Optional[VenueInfo]
+        """
         if not value:
             return None
         return VenueInfo(value)
-    
-    
-    def flat_serialise(self) -> Dict:
 
+
+    def flat_serialise(self) -> Dict:
         """
-        Serialise MetadataRow to dictionary with ALL fields represented as lists of items (strings).
+        Serialise the row to a flat dictionary where every field value is a list of strings.
+
+        Multi-item fields (IDs, agents) are represented as lists of their raw
+        string forms; single-value fields are wrapped in a one-element list.
+
+        :return: Dictionary mapping field names to lists of string items.
+        :rtype: Dict
         """
         result = {
             "id": self.id,
@@ -147,30 +211,50 @@ class MetadataRow:
 
         return result
 
-    def __repr__(self):
+    def __repr__(self) -> str:
+        """Return an unambiguous string representation of the metadata row."""
         return f"MetadataRow(id={self.id}, title={self.title})"
 
 
 class CitationsRow:
     """
-    Structured representation of a citations CSV row.
+    Structured representation of a citations (CITS-CSV) row.
+
+    Parses citing and cited ID fields and optional publication dates.
     """
-    def __init__(self, raw_row: Dict[str, str]):
+    def __init__(self, raw_row: Dict[str, str]) -> None:
+        """
+        Parse a raw CSV row dictionary into a structured CitationsRow.
+
+        :param raw_row: Dictionary mapping column names to raw string values.
+        :type raw_row: Dict[str, str]
+        :rtype: None
+        """
         self._raw = raw_row.copy()
         self.citing_id: List[str] = self._parse_id_field(raw_row.get('citing_id', ''))
         self.citing_publication_date: Optional[str] = raw_row.get('citing_publication_date')
         self.cited_id: List[str] = self._parse_id_field(raw_row.get('cited_id', ''))
         self.cited_publication_date: Optional[str] = raw_row.get('cited_publication_date')
-    
+
     def _parse_id_field(self, value: str) -> List[str]:
-        """Parse ID field (space-separated list)."""
+        """
+        Parse a space-separated ID field into a list of strings.
+
+        :param value: Raw space-separated ID string.
+        :type value: str
+        :return: List of individual ID strings, or an empty list if blank.
+        :rtype: List[str]
+        """
         if not value:
             return []
         return value.split(' ')
-    
+
     def flat_serialise(self) -> Dict:
         """
-        Serialise CitationsRow to dictionary with ALL fields represented as lists of items (strings).
+        Serialise the row to a flat dictionary where every field value is a list of strings.
+
+        :return: Dictionary mapping field names to lists of string items.
+        :rtype: Dict
         """
         result = {
             "citing_id": self.citing_id,
@@ -180,26 +264,31 @@ class CitationsRow:
         }
 
         return result
-    
-    def __repr__(self):
+
+    def __repr__(self) -> str:
+        """Return an unambiguous string representation of the citations row."""
         return f"CitationsRow(citing_id={self.citing_id}, cited_id={self.cited_id})"
 
 
 def read_metadata_row(row_dict: Dict[str, str]) -> MetadataRow:
     """
-    Read and parse a metadata CSV row into a structured MetadataRow object.
-    
-    :param row_dict: Dictionary representing a single CSV row (from csv.DictReader)
-    :return: MetadataRow object with parsed fields
+    Parse a metadata CSV row into a structured :class:`MetadataRow` object.
+
+    :param row_dict: Dictionary representing a single CSV row (from ``csv.DictReader``).
+    :type row_dict: Dict[str, str]
+    :return: Parsed :class:`MetadataRow` instance.
+    :rtype: MetadataRow
     """
     return MetadataRow(row_dict)
 
 
 def read_citations_row(row_dict: Dict[str, str]) -> CitationsRow:
     """
-    Read and parse a citations CSV row into a structured CitationsRow object.
-    
-    :param row_dict: Dictionary representing a single CSV row (from csv.DictReader)
-    :return: CitationsRow object with parsed fields
+    Parse a citations CSV row into a structured :class:`CitationsRow` object.
+
+    :param row_dict: Dictionary representing a single CSV row (from ``csv.DictReader``).
+    :type row_dict: Dict[str, str]
+    :return: Parsed :class:`CitationsRow` instance.
+    :rtype: CitationsRow
     """
     return CitationsRow(row_dict)

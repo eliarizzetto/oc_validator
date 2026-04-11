@@ -9,7 +9,18 @@ from os.path import dirname, abspath, realpath
 import random
 from os.path import join
 
-def generate_error_colors(n) -> set:
+def generate_error_colors(n: int) -> set[str]:
+    """
+    Generate *n* visually distinct random colours as hex strings.
+
+    Uses HSV colour space with controlled saturation and value ranges to
+    ensure readable colours.
+
+    :param n: Number of distinct colours to generate.
+    :type n: int
+    :return: Set of hex colour strings (e.g. ``'#a3f2c1'``).
+    :rtype: set[str]
+    """
     colors = set()
 
     while len(colors) < n:
@@ -92,16 +103,19 @@ def model_row_default(row:Union[MetadataRow, CitationsRow], row_idx: int) -> dic
     return default_model
 
 
-def enrich_row(modeled_row:dict, error_obj:dict, err_id:str):
+def enrich_row(modeled_row: dict, error_obj: dict, err_id: str) -> dict:
     """
-        Enriches the modelled row with the error information, by adding the error ID to the 'issues' list of each item involved in the error.
-    
-    :param modeled_row: the dictionary representing the modelled row to be enriched with error information
+    Enrich the modelled row with error information, by adding the error ID to
+    the ``issues`` list of each item involved in the error.
+
+    :param modeled_row: The dictionary representing the modelled row to enrich.
     :type modeled_row: dict
-    :param error_obj: the error object (as taken from the validation report) containing information about the error to be associated with one or more pieces of data in the table
+    :param error_obj: The error object from the validation report.
     :type error_obj: dict
-    :param err_id: the unique identifier of the error
+    :param err_id: Unique identifier of the error.
     :type err_id: str
+    :return: The enriched modelled row (modified in place and returned).
+    :rtype: dict
     """
     row_number : str = str(modeled_row['row_idx'])
     for field_label, items_indexes in error_obj['position']['table'][row_number].items():
@@ -124,17 +138,17 @@ def enrich_row(modeled_row:dict, error_obj:dict, err_id:str):
     return modeled_row
 
 
-def map_errors_to_data(data:List[Union[MetadataRow, CitationsRow]], report:list):
+def map_errors_to_data(data: List[Union[MetadataRow, CitationsRow]], report: list) -> tuple[list[dict], dict]:
     """
-    Maps the errors in the validation report to the corresponding pieces of data 
-    in the original table, by enriching the modelled data with error information.
+    Map validation report errors to the corresponding data items in the original table.
 
-    :param data: the original table data, as a list of MetadataRow or CitationsRow objects
+    :param data: The original table data, as a list of MetadataRow or CitationsRow objects.
     :type data: List[Union[MetadataRow, CitationsRow]]
-    :param report: the validation report, as a list of error objects (dictionaries) 
+    :param report: The validation report, as a list of error dictionaries.
     :type report: list
-    :return: a tuple containing the enriched rows (as a list of dictionaries) and the mapped errors (as a dictionary of error information)
-    :rtype: Tuple[List[dict], dict]
+    :return: A tuple ``(enriched_rows, mapped_errors)`` where *enriched_rows* is a
+        list of row dictionaries and *mapped_errors* maps error IDs to their metadata.
+    :rtype: tuple[list[dict], dict]
     """
 
     out_data = [model_row_default(row, idx) for idx, row in enumerate(data)]
@@ -166,19 +180,20 @@ def map_errors_to_data(data:List[Union[MetadataRow, CitationsRow]], report:list)
     return out_data, out_errors
 
 
-def make_gui(csv_fp:str, report_fp:str, out_fp:str):
+def make_gui(csv_fp: str, report_fp: str, out_fp: str) -> None:
     """
-    Generates an HTML document that visualises the validation results, 
-    by mapping the errors in the validation report to the corresponding pieces 
-    of data in the original table and rendering the enriched data and error 
-    information in a user-friendly format.
-    
-    :param csv_fp: the file path of the original CSV data, used to model the data and map errors to it
+    Generate an HTML document that visualises the validation results.
+
+    Maps errors from the validation report to the corresponding data items
+    in the original CSV table and renders them in a user-friendly HTML page.
+
+    :param csv_fp: Path to the original CSV data file.
     :type csv_fp: str
-    :param report_fp: Description of the file path of the validation report, used to extract error information and map it to the data
+    :param report_fp: Path to the JSON-Lines validation report.
     :type report_fp: str
-    :param out_fp: the file path where the generated HTML document will be saved
+    :param out_fp: Path where the generated HTML document will be saved.
     :type out_fp: str
+    :rtype: None
     """
 
     # separators for items according to the field,
@@ -256,12 +271,20 @@ def make_gui(csv_fp:str, report_fp:str, out_fp:str):
 
     return None
 
-def merge_html_files(doc1_fp, doc2_fp, merged_out_fp):
+def merge_html_files(doc1_fp: str, doc2_fp: str, merged_out_fp: str) -> None:
     """
-    Merges two HTML documents into a single document. 
-    :param doc1_fp: the file path to the first HTML document.
-    :param doc2_fp: the file path to the second HTML document.
-    :param merged_out_fp: the file path to the output merged HTML document.
+    Merge two HTML documents into a single document.
+
+    Combines the table containers from both documents and interleaves the
+    general-info sections.
+
+    :param doc1_fp: Path to the first HTML document.
+    :type doc1_fp: str
+    :param doc2_fp: Path to the second HTML document.
+    :type doc2_fp: str
+    :param merged_out_fp: Path for the output merged HTML document.
+    :type merged_out_fp: str
+    :rtype: None
     """
     with open(doc1_fp, 'r', encoding='utf-8') as fhandle1, open(doc2_fp, 'r', encoding='utf-8') as fhandle2:
         soup1 = BeautifulSoup(fhandle1, 'html.parser')

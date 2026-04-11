@@ -16,8 +16,17 @@ from oc_ds_converter.oc_idmanager import doi, isbn, issn, orcid, pmcid, pmid, ro
 from re import match
 
 class IdSyntax:
+    """
+    Validates the external syntax of identifiers by delegating to the
+    appropriate ``oc_ds_converter`` ID manager for each recognised scheme.
+    """
 
-    def __init__(self):
+    def __init__(self) -> None:
+        """
+        Initialise ID managers for all supported identifier schemes.
+
+        :rtype: None
+        """
         self.doi_mngr = doi.DOIManager()
         self.isbn_mngr = isbn.ISBNManager()
         self.issn_mngr = issn.ISSNManager()
@@ -34,12 +43,17 @@ class IdSyntax:
         self.jid_mngr = jid.JIDManager()
         self.arxiv_mngr = arxiv.ArXivManager()
 
-    def check_id_syntax(self, id: str):
+    def check_id_syntax(self, id: str) -> bool:
         """
-        Checks the specific external syntax of each identifier schema, calling the syntax_ok() method from every
-        IdManager class.
-        :param id: the identifier (with its prefix)
-        :return: bool
+        Validate the external syntax of an identifier according to its scheme.
+
+        Dispatches to the appropriate manager's ``syntax_ok()`` method based on
+        the identifier prefix. ``temp:`` and ``local:`` identifiers always pass.
+
+        :param id: The identifier string, including its prefix (e.g. ``"doi:10.1234/abc"``).
+        :type id: str
+        :return: ``True`` if the identifier's syntax is valid, ``False`` otherwise.
+        :rtype: bool
         """
         oc_prefix = id[:(id.index(':') + 1)]
 

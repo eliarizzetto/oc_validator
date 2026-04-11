@@ -21,6 +21,7 @@ from re import finditer
 import tempfile
 import shutil
 import lmdb
+from typing import Optional
 from oc_validator.helper import Helper, read_csv, CSVStreamReader, JSONLStreamIO
 from oc_validator.csv_wellformedness import Wellformedness
 from oc_validator.id_syntax import IdSyntax
@@ -151,10 +152,16 @@ class Validator:
             self.duplicate_data_cache.close()
             self.duplicate_data_cache = None
 
-    def process_selector(self):
+    def process_selector(self) -> str:
         """
         Detect the table type by streaming the first few rows.
-        This is memory-efficient as it doesn't load the entire file.
+
+        Reads up to 10 rows to determine whether the CSV is a META-CSV or a
+        CITS-CSV, then returns the corresponding identifier string.
+
+        :return: ``'meta_csv'`` or ``'cits_csv'``.
+        :rtype: str
+        :raises InvalidTableError: if the table structure cannot be recognised.
         """
         # Read first few rows to determine table type
         sample_rows = []
@@ -183,9 +190,19 @@ class Validator:
         except KeyError:
             raise InvalidTableError(self.csv_doc)
         
-    def _make_output_filepath(self, base_filename, extension):
+    def _make_output_filepath(self, base_filename: str, extension: str) -> str:
         """
-        Generates a unique output filepath, checks if a file with the same name exists, and if so appends an incrementing number.
+        Generate a unique output filepath.
+
+        If a file with the base name already exists in the output directory,
+        an incrementing counter is appended to the filename.
+
+        :param base_filename: Base name for the output file (without extension).
+        :type base_filename: str
+        :param extension: File extension (e.g. ``'jsonl'``, ``'txt'``).
+        :type extension: str
+        :return: Absolute path to a non-existing output file.
+        :rtype: str
         """
         
         full_path = join(self.output_dir, f"{base_filename}.{extension}")
@@ -199,6 +216,15 @@ class Validator:
         return full_path
 
     def validate(self) -> bool:
+        """
+        Run the full validation pipeline on the input CSV document.
+
+        Dispatches to :meth:`validate_meta` or :meth:`validate_cits` depending
+        on the detected table type.
+
+        :return: ``True`` if the table is valid (no issues found), ``False`` otherwise.
+        :rtype: bool
+        """
         logger.info("Starting validation of '%s'", self.csv_doc)
         try:
             start = time()
@@ -939,8 +965,54 @@ class Validator:
 
 
 class ClosureValidator:
+    """
+    Validate a META-CSV and a CITS-CSV together, checking both their
+    individual correctness and the transitive closure between the two tables.
 
-    def __init__(self, meta_in, meta_out_dir, cits_in, cits_out_dir, strict_sequentiality=False, meta_kwargs=None, cits_kwargs=None, use_lmdb=False, map_size: int = 1 * 1024**3, cache_dir: str = None, verbose: bool = False, log_file: str = None) -> None:
+    The closure check verifies that every entity referenced in citations has
+    corresponding metadata and vice versa.
+    """
+
+    def __init__(self, meta_in: str, meta_out_dir: str, cits_in: str, cits_out_dir: str,
+                 strict_sequentiality: bool = False, meta_kwargs: Optional[dict] = None,
+                 cits_kwargs: Optional[dict] = None, use_lmdb: bool = False,
+                 map_size: int = 1 * 1024**3, cache_dir: Optional[str] = None,
+                 verbose: bool = False, log_file: Optional[str] = None) -> None:
+        """
+        Initialise the ClosureValidator with META-CSV and CITS-CSV file paths.
+
+        Creates two internal :class:`Validator` instances and verifies that each
+        receives the expected table type.
+
+        :param meta_in: Path to the META-CSV file.
+        :type meta_in: str
+        :param meta_out_dir: Directory for META-CSV validation output.
+        :type meta_out_dir: str
+        :param cits_in: Path to the CITS-CSV file.
+        :type cits_in: str
+        :param cits_out_dir: Directory for CITS-CSV validation output.
+        :type cits_out_dir: str
+        :param strict_sequentiality: If ``True``, skip the closure check when
+            the individual validations already report errors. Defaults to ``False``.
+        :type strict_sequentiality: bool
+        :param meta_kwargs: Extra keyword arguments forwarded to the META-CSV
+            :class:`Validator`.
+        :type meta_kwargs: Optional[dict]
+        :param cits_kwargs: Extra keyword arguments forwarded to the CITS-CSV
+            :class:`Validator`.
+        :type cits_kwargs: Optional[dict]
+        :param use_lmdb: If ``True``, use LMDB for caching (recommended for large files).
+        :type use_lmdb: bool
+        :param map_size: Maximum size in bytes for each LMDB environment (default 1 GB).
+        :type map_size: int
+        :param cache_dir: Optional base directory under which all LMDB caches are created.
+        :type cache_dir: Optional[str]
+        :param verbose: If ``True``, enable INFO-level logging output.
+        :type verbose: bool
+        :param log_file: If provided, write logs to this file instead of the terminal.
+        :type log_file: Optional[str]
+        :raises TableNotMatchingInstance: if either file is not of the expected table type.
+        """
         self.meta_csv_doc = meta_in
         self.meta_output_dir = meta_out_dir
         self.cits_csv_doc = cits_in
@@ -1135,8 +1207,17 @@ class ClosureValidator:
         return (meta_is_valid_closure, cits_is_valid_closure)
         
 
-    def validate(self):
+    def validate(self) -> tuple[bool, bool]:
+        """
+        Run the full validation pipeline on both META-CSV and CITS-CSV.
 
+        First validates each table individually, then (unless
+        ``strict_sequentiality`` is ``True`` and errors were found) checks the
+        transitive closure between the two.
+
+        :return: A two-element tuple ``(meta_is_valid, cits_is_valid)``.
+        :rtype: tuple[bool, bool]
+        """
         try:
             # Run single validation for META-CSV and CITS-CSV
             logger.info("Running individual validation of META-CSV and CITS-CSV")
