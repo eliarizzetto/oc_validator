@@ -16,6 +16,9 @@ from oc_ds_converter.oc_idmanager import doi, isbn, issn, orcid, pmcid, pmid, ro
     openalex, crossref, jid, arxiv
 from SPARQLWrapper import SPARQLWrapper, JSON
 import time
+import logging
+
+logger = logging.getLogger('oc_validator')
 
 
 class IdExistence:
@@ -139,13 +142,13 @@ class IdExistence:
                 return result.get('boolean')
             
             except Exception as e:
-                print(f"Attempt {attempt + 1} failed with error: {e}")
+                logger.warning("SPARQL query attempt %d/%d failed for '%s': %s", attempt + 1, retries, id, e)
                 if attempt < retries - 1:
                     time.sleep(delay)  # wait before retrying
                 else:
-                    print("Max retries reached. Query failed.")
+                    logger.warning("Max retries reached for SPARQL query on '%s'. Query failed.", id)
                     return False
-    
+
     def query_omid_in_meta(self, id:str, retries:int=3, delay:float=2.0):
         """
         Queries exclusively OMIDs in OC Meta, checking if they are registered in the live triplestore.
@@ -172,9 +175,9 @@ class IdExistence:
                 return result.get('boolean', False)
             
             except Exception as e:
-                print(f"Attempt {attempt + 1} failed with error: {e}")
+                logger.warning("OMID SPARQL query attempt %d/%d failed for '%s': %s", attempt + 1, retries, id, e)
                 if attempt < retries - 1:
                     time.sleep(delay)  # wait before retrying
                 else:
-                    print("Max retries reached. Query failed.")
+                    logger.warning("Max retries reached for OMID SPARQL query on '%s'. Query failed.", id)
                     return False

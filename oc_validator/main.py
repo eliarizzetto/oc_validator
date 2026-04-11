@@ -30,7 +30,8 @@ from oc_validator.table_reader import read_metadata_row, read_citations_row
 from oc_validator.lmdb_cache import LmdbCache, InMemoryCache, LmdbUnionFind, InMemoryUnionFind, UnionFind
 from tqdm import tqdm
 from argparse import ArgumentParser
-import logging
+from oc_validator import configure_logging, logger
+from time import time
 
 
 # --- Custom Exception classes. ---
@@ -61,7 +62,8 @@ class TableNotMatchingInstance(ValidationError):
 # --- Class for the main process; validates one document at a time via the Validator.validate() method. ---
 class Validator:
     def __init__(self, csv_doc: str, output_dir: str, use_meta_endpoint=False, verify_id_existence=True,
-                 use_lmdb=False, map_size: int = 1 * 1024**3, cache_dir: str = None):
+                 use_lmdb=False, map_size: int = 1 * 1024**3, cache_dir: str = None, verbose: bool = False,
+                 log_file: str = None):
         """
         Initialize the Validator.
 
@@ -72,8 +74,13 @@ class Validator:
         :param use_lmdb: If True, use LMDB for caching (recommended for large files)
         :param map_size: Maximum size in bytes for each LMDB environment (default 1 GB)
         :param cache_dir: Optional base directory under which all LMDB caches are created
+        :param verbose: If True, enable DEBUG-level logging output
+        :param log_file: If provided, write logs to this file instead of the terminal
         """
         self.csv_doc = csv_doc
+        self.verbose = verbose
+        configure_logging(verbose, log_file)
+        logger.debug("Initializing Validator for '%s' (output: '%s')", csv_doc, output_dir)
         self.csv_stream = CSVStreamReader(csv_doc)  # Use streaming instead of loading all data
         self.table_to_process = self.process_selector()
         self.helper = Helper()
@@ -95,6 +102,9 @@ class Validator:
         elif self.table_to_process == 'cits_csv':
             self.output_fp_json = self._make_output_filepath('out_validate_cits', 'jsonl')
             self.output_fp_txt = self._make_output_filepath('cits_validation_summary', 'txt')
+
+        logger.debug("Detected table type: %s", self.table_to_process)
+        logger.debug("Output files: jsonl='%s', txt='%s'", self.output_fp_json, self.output_fp_txt)
         
         # Initialize cache based on memory_efficient flag
         self.memory_efficient = use_lmdb
@@ -106,6 +116,8 @@ class Validator:
             self.id_cache = LmdbCache(cache_name, base_dir=self._cache_dir or '.', map_size=self.map_size)
         else:
             self.id_cache = InMemoryCache(cache_name)
+
+        logger.info("Cache type: %s", 'LMDB' if use_lmdb else 'in-memory')
         
         # Open the cache
         self.id_cache.open()
@@ -187,14 +199,20 @@ class Validator:
         return full_path
 
     def validate(self) -> bool:
+        logger.info("Starting validation of '%s'", self.csv_doc)
         try:
+            start = time()
             if self.table_to_process == 'meta_csv':
-                return self.validate_meta()
+                result = self.validate_meta()
             elif self.table_to_process == 'cits_csv':
-                return self.validate_cits()
+                result = self.validate_cits()
+            logger.info("Validation of '%s' complete. Valid: %s", self.csv_doc, result)
+            return result
         finally:
+            logger.info(f"Cleaning up resources for {self.table_to_process} table...")
             if self.id_cache._is_open:
                 self.id_cache.close()
+            logger.info(f"Process finished in {(time() - start)/60:.2f} minutes.")
 
 
     def validate_meta(self) -> bool:
@@ -202,6 +220,7 @@ class Validator:
         Validate an instance of META-CSV using JSON-Lines streaming output
         :return: True if the table is valid (i.e. no issues found), False otherwise.
         """
+        logger.info("Validating META-CSV: '%s'", self.csv_doc)
         messages = self.messages
         id_type_dict = self.id_type_dict
 
@@ -728,6 +747,8 @@ class Validator:
             for error in duplicate_report:
                 jsonl_file.write(error)
 
+        logger.info("META-CSV validation complete, writing summary to '%s'", self.output_fp_txt)
+
         # write human-readable validation summary to txt file
         textual_report_stream= self.helper.create_validation_summary_stream(self.output_fp_json)
         with open(self.output_fp_txt, 'w', encoding='utf-8') as f:
@@ -735,6 +756,7 @@ class Validator:
                 f.write(l)
 
         is_valid = JSONLStreamIO(self.output_fp_json).is_empty()
+        logger.info("META-CSV validation result for '%s': %s", self.csv_doc, 'valid' if is_valid else 'invalid')
         return is_valid
 
     def validate_cits(self) -> bool:
@@ -742,6 +764,7 @@ class Validator:
         Validates an instance of CITS-CSV using JSON-Lines streaming output
         :return: True if the table is valid (i.e. no issues found), False otherwise.
         """
+        logger.info("Validating CITS-CSV: '%s'", self.csv_doc)
         messages = self.messages
 
         # Set up Union-Find and cache for duplicate detection
@@ -902,6 +925,8 @@ class Validator:
             for error in duplicate_report:
                 jsonl_file.write(error)
 
+        logger.info("CITS-CSV validation complete, writing summary to '%s'", self.output_fp_txt)
+
         # write human-readable validation summary to txt file
         textual_report_stream= self.helper.create_validation_summary_stream(self.output_fp_json)
         with open(self.output_fp_txt, "w", encoding='utf-8') as f:
@@ -909,17 +934,22 @@ class Validator:
                 f.write(l)
 
         is_valid = JSONLStreamIO(self.output_fp_json).is_empty()
+        logger.info("CITS-CSV validation result for '%s': %s", self.csv_doc, 'valid' if is_valid else 'invalid')
         return is_valid
 
 
 class ClosureValidator:
 
-    def __init__(self, meta_in, meta_out_dir, cits_in, cits_out_dir, strict_sequentiality=False, meta_kwargs=None, cits_kwargs=None, use_lmdb=False, map_size: int = 1 * 1024**3, cache_dir: str = None) -> None:
+    def __init__(self, meta_in, meta_out_dir, cits_in, cits_out_dir, strict_sequentiality=False, meta_kwargs=None, cits_kwargs=None, use_lmdb=False, map_size: int = 1 * 1024**3, cache_dir: str = None, verbose: bool = False, log_file: str = None) -> None:
         self.meta_csv_doc = meta_in
         self.meta_output_dir = meta_out_dir
         self.cits_csv_doc = cits_in
         self.cits_output_dir = cits_out_dir
         self.strict_sequentiality = strict_sequentiality  # if True, runs the check on transitive closure if and only if the other checks passed without errors
+        self.verbose = verbose
+        self.log_file = log_file
+        configure_logging(verbose, log_file)
+        logger.info("Initializing ClosureValidator: meta='%s', cits='%s'", meta_in, cits_in)
 
         script_dir = dirname(abspath(__file__))  # Directory where the script is located
         with open(join(script_dir, 'messages.yaml'), 'r', encoding='utf-8') as fm:
@@ -931,6 +961,12 @@ class ClosureValidator:
         # Merge user-provided kwargs with defaults
         meta_kwargs = {**default_kwargs, **(meta_kwargs or {})}
         cits_kwargs = {**default_kwargs, **(cits_kwargs or {})}
+
+        # Propagate verbose and log_file to child validators
+        meta_kwargs['verbose'] = verbose
+        cits_kwargs['verbose'] = verbose
+        meta_kwargs['log_file'] = log_file
+        cits_kwargs['log_file'] = log_file
 
         # Create Validator instances with merged kwargs
         self.meta_validator = Validator(self.meta_csv_doc, self.meta_output_dir, **meta_kwargs)
@@ -975,6 +1011,7 @@ class ClosureValidator:
         Only position caches are built here (from the stored data caches).
         """
         print('Checking transitive closure between metadata and citations...')
+        logger.info("Checking transitive closure between metadata and citations")
         meta_is_valid_closure = True
         cits_is_valid_closure = True
 
@@ -1093,31 +1130,39 @@ class ClosureValidator:
             for lc in textual_report_stream_cits:
                 fc.write(lc)
 
+        logger.info("Closure check complete: meta_valid=%s, cits_valid=%s", meta_is_valid_closure, cits_is_valid_closure)
+
         return (meta_is_valid_closure, cits_is_valid_closure)
         
 
     def validate(self):
 
-        # TODO: add informative print messages to say which process is running and when it terminates
-
         try:
             # Run single validation for META-CSV and CITS-CSV
+            logger.info("Running individual validation of META-CSV and CITS-CSV")
             meta_is_valid = self.meta_validator.validate()
             cits_is_valid = self.cits_validator.validate()
+            logger.info("Individual validation complete: meta_valid=%s, cits_valid=%s", meta_is_valid, cits_is_valid)
 
             # in case some errors have already been found and strict_sequentiality is True, don't run the check on closure
             if self.strict_sequentiality:
                 if not meta_is_valid or not cits_is_valid:
                     print('The separate validation of the metadata (META-CSV) and citations (CITS-CSV) tables already detected some error (in one or both documents).')
                     print('Skipping the check of transitive closure as strict_sequentiality==True.')
+                    logger.info("Skipping closure check due to strict_sequentiality: meta_valid=%s, cits_valid=%s", meta_is_valid, cits_is_valid)
                     return (meta_is_valid, cits_is_valid)
 
             # Run validation for transitive closure
             meta_is_valid_closure, cits_is_valid_closure = self.check_closure()
 
-            return (bool(meta_is_valid_closure and meta_is_valid), bool(cits_is_valid_closure and cits_is_valid))
+            final_meta = bool(meta_is_valid_closure and meta_is_valid)
+            final_cits = bool(cits_is_valid_closure and cits_is_valid)
+            logger.info("ClosureValidator final result: meta_valid=%s, cits_valid=%s", final_meta, final_cits)
+            return (final_meta, final_cits)
         finally:
+            logger.info("ClosureValidator process finished. Cleaning up resources...")
             self.close()
+            logger.info("ClosureValidator resources cleaned up.")
 
 
 if __name__ == '__main__':
@@ -1140,6 +1185,12 @@ if __name__ == '__main__':
     parser.add_argument('--cache-dir', dest='cache_dir', type=str, default=None,
                         help='Base directory under which all LMDB caches are created.',
                         required=False)
+    parser.add_argument('-v', '--verbose', dest='verbose', action='store_true',
+                        default=False,
+                        help='Enable verbose logging output.')
+    parser.add_argument('--log-file', dest='log_file', type=str, default=None,
+                        help='Write logs to this file instead of the terminal.',
+                        required=False)
     args = parser.parse_args()
     v = Validator(
         args.input_csv,
@@ -1149,6 +1200,8 @@ if __name__ == '__main__':
         use_lmdb=args.use_lmdb,
         map_size=args.map_size * 1024**3,
         cache_dir=args.cache_dir,
+        verbose=args.verbose,
+        log_file=args.log_file,
     )
     v.validate()
 
