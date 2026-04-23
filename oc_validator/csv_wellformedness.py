@@ -18,7 +18,7 @@ from oc_validator.helper import Helper
 from oc_validator.lmdb_cache import LmdbCache, LmdbUnionFind, InMemoryCache, InMemoryUnionFind
 from json import load
 from os.path import join, dirname, abspath
-from typing import Generator, Union
+from typing import Generator, List, Union
 
 class Wellformedness:
     """
@@ -273,6 +273,59 @@ class Wellformedness:
             return True
         else:
             return False
+
+    def check_duplicate_ra_by_id(self, items: List) -> List[List[int]]:
+        """
+        Find in-field duplicates among author/editor items based on shared RA IDs.
+
+        Two items are considered duplicates when they share at least one
+        responsible-agent identifier (e.g. ``orcid:0000-0001``).
+
+        :param items: List of :class:`~oc_validator.table_reader.AgentItem` objects.
+        :type items: List
+        :return: A list of duplicate groups. Each group is a sorted list of item
+            indices that share at least one RA ID. An empty list means no duplicates.
+        :rtype: List[List[int]]
+        """
+        pid_to_indices: dict = {}
+        for idx, item in enumerate(items):
+            for pid in item.ids:
+                pid_to_indices.setdefault(pid, []).append(idx)
+
+        seen_groups: set = set()
+        result: List[List[int]] = []
+        for indices in pid_to_indices.values():
+            if len(indices) >= 2:
+                group = tuple(sorted(set(indices)))
+                if group not in seen_groups:
+                    seen_groups.add(group)
+                    result.append(list(group))
+
+        return result
+
+    def check_duplicate_publisher_by_raw(self, items: List) -> List[List[int]]:
+        """
+        Find in-field duplicates among publisher items based on raw string exact match.
+
+        Two publisher items are considered duplicates when their raw string
+        representations are identical.
+
+        :param items: List of :class:`~oc_validator.table_reader.AgentItem` objects.
+        :type items: List
+        :return: A list of duplicate groups. Each group is a list of item indices
+            whose raw strings are identical. An empty list means no duplicates.
+        :rtype: List[List[int]]
+        """
+        raw_to_indices: dict = {}
+        for idx, item in enumerate(items):
+            raw_to_indices.setdefault(item._raw, []).append(idx)
+
+        result: List[List[int]] = []
+        for indices in raw_to_indices.values():
+            if len(indices) >= 2:
+                result.append(indices)
+
+        return result
 
     def wellformedness_type(self, type_value: str) -> bool:
         """

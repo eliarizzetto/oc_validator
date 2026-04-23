@@ -2,6 +2,7 @@ import unittest
 from oc_validator.csv_wellformedness import Wellformedness
 from oc_validator.helper import Helper
 from oc_validator.lmdb_cache import InMemoryCache, InMemoryUnionFind
+from oc_validator.table_reader import AgentItem
 
 
 class TestWellformednessBrId(unittest.TestCase):
@@ -790,6 +791,205 @@ class TestGetDuplicatesCits(unittest.TestCase):
         result = list(self.wf.get_duplicates_cits(uf, data, self.messages))
         self.assertEqual(result, [])
         data.close()
+
+
+class TestCheckDuplicateRaById(unittest.TestCase):
+    """Tests for Wellformedness.check_duplicate_ra_by_id."""
+
+    def setUp(self):
+        self.wf = Wellformedness()
+
+    def test_no_duplicates(self):
+        items = [
+            AgentItem('Smith, John [orcid:0000-0001-2345-6789]'),
+            AgentItem('Doe, Jane [orcid:0000-0002-3456-7890]'),
+        ]
+        result = self.wf.check_duplicate_ra_by_id(items)
+        self.assertEqual(result, [])
+
+    def test_duplicate_by_shared_id(self):
+        items = [
+            AgentItem('Smith, John [orcid:0000-0001-2345-6789]'),
+            AgentItem('Doe, Jane [orcid:0000-0001-2345-6789]'),
+        ]
+        result = self.wf.check_duplicate_ra_by_id(items)
+        self.assertEqual(len(result), 1)
+        self.assertEqual(result[0], [0, 1])
+
+    def test_three_items_sharing_same_id(self):
+        items = [
+            AgentItem('Smith, John [orcid:0000-0001-2345-6789]'),
+            AgentItem('Doe, Jane [orcid:0000-0001-2345-6789]'),
+            AgentItem('Brown, Bob [orcid:0000-0001-2345-6789]'),
+        ]
+        result = self.wf.check_duplicate_ra_by_id(items)
+        self.assertEqual(len(result), 1)
+        self.assertEqual(result[0], [0, 1, 2])
+
+    def test_multiple_duplicate_groups(self):
+        items = [
+            AgentItem('Smith, John [orcid:0001]'),
+            AgentItem('Doe, Jane [orcid:0002]'),
+            AgentItem('Smith Copy [orcid:0001]'),
+            AgentItem('Doe Copy [orcid:0002]'),
+        ]
+        result = self.wf.check_duplicate_ra_by_id(items)
+        self.assertEqual(len(result), 2)
+        self.assertIn([0, 2], result)
+        self.assertIn([1, 3], result)
+
+    def test_no_ids_no_duplicates(self):
+        items = [
+            AgentItem('Smith, John'),
+            AgentItem('Doe, Jane'),
+        ]
+        result = self.wf.check_duplicate_ra_by_id(items)
+        self.assertEqual(result, [])
+
+    def test_empty_list(self):
+        result = self.wf.check_duplicate_ra_by_id([])
+        self.assertEqual(result, [])
+
+    def test_single_item(self):
+        items = [AgentItem('Smith, John [orcid:0001]')]
+        result = self.wf.check_duplicate_ra_by_id(items)
+        self.assertEqual(result, [])
+
+    def test_items_with_multiple_ids_sharing_one(self):
+        items = [
+            AgentItem('Smith, John [orcid:0001 wikidata:Q1]'),
+            AgentItem('Doe, Jane [orcid:0001 wikidata:Q2]'),
+        ]
+        result = self.wf.check_duplicate_ra_by_id(items)
+        self.assertEqual(len(result), 1)
+        self.assertEqual(result[0], [0, 1])
+
+    def test_items_sharing_all_ids_reports_one_group(self):
+        """When two items share all IDs, only one duplicate group is reported."""
+        items = [
+            AgentItem('Smith, John [orcid:0001 wikidata:Q1]'),
+            AgentItem('Doe, Jane [orcid:0001 wikidata:Q1]'),
+        ]
+        result = self.wf.check_duplicate_ra_by_id(items)
+        self.assertEqual(len(result), 1)
+        self.assertEqual(result[0], [0, 1])
+
+    def test_transitive_duplicate_chain(self):
+        """Items sharing different IDs that create a chain produce separate groups."""
+        items = [
+            AgentItem('A [orcid:0001]'),
+            AgentItem('B [orcid:0001 wikidata:Q2]'),
+            AgentItem('C [wikidata:Q2]'),
+        ]
+        result = self.wf.check_duplicate_ra_by_id(items)
+        self.assertEqual(len(result), 2)
+        self.assertIn([0, 1], result)
+        self.assertIn([1, 2], result)
+
+    def test_different_ra_schemes_still_duplicate(self):
+        """Items sharing a crossref ID are duplicates regardless of other IDs."""
+        items = [
+            AgentItem('Publisher A [crossref:297]'),
+            AgentItem('Publisher B [crossref:297]'),
+        ]
+        result = self.wf.check_duplicate_ra_by_id(items)
+        self.assertEqual(len(result), 1)
+        self.assertEqual(result[0], [0, 1])
+
+
+class TestCheckDuplicatePublisherByRaw(unittest.TestCase):
+    """Tests for Wellformedness.check_duplicate_publisher_by_raw."""
+
+    def setUp(self):
+        self.wf = Wellformedness()
+
+    def test_no_duplicates(self):
+        items = [
+            AgentItem('Springer [crossref:297]'),
+            AgentItem('Elsevier [crossref:298]'),
+        ]
+        result = self.wf.check_duplicate_publisher_by_raw(items)
+        self.assertEqual(result, [])
+
+    def test_duplicate_by_raw_string(self):
+        items = [
+            AgentItem('Springer [crossref:297]'),
+            AgentItem('Springer [crossref:297]'),
+        ]
+        result = self.wf.check_duplicate_publisher_by_raw(items)
+        self.assertEqual(len(result), 1)
+        self.assertEqual(result[0], [0, 1])
+
+    def test_three_duplicate_publishers(self):
+        items = [
+            AgentItem('Springer [crossref:297]'),
+            AgentItem('Springer [crossref:297]'),
+            AgentItem('Springer [crossref:297]'),
+        ]
+        result = self.wf.check_duplicate_publisher_by_raw(items)
+        self.assertEqual(len(result), 1)
+        self.assertEqual(result[0], [0, 1, 2])
+
+    def test_empty_list(self):
+        result = self.wf.check_duplicate_publisher_by_raw([])
+        self.assertEqual(result, [])
+
+    def test_single_item(self):
+        items = [AgentItem('Springer [crossref:297]')]
+        result = self.wf.check_duplicate_publisher_by_raw(items)
+        self.assertEqual(result, [])
+
+    def test_different_ids_not_duplicate(self):
+        """Same publisher name but different IDs are NOT duplicates by raw string."""
+        items = [
+            AgentItem('Springer [crossref:297]'),
+            AgentItem('Springer [crossref:298]'),
+        ]
+        result = self.wf.check_duplicate_publisher_by_raw(items)
+        self.assertEqual(result, [])
+
+    def test_name_only_duplicates(self):
+        items = [
+            AgentItem('Springer'),
+            AgentItem('Springer'),
+        ]
+        result = self.wf.check_duplicate_publisher_by_raw(items)
+        self.assertEqual(len(result), 1)
+        self.assertEqual(result[0], [0, 1])
+
+    def test_multiple_duplicate_groups(self):
+        items = [
+            AgentItem('Springer [crossref:297]'),
+            AgentItem('Elsevier [crossref:298]'),
+            AgentItem('Springer [crossref:297]'),
+            AgentItem('Elsevier [crossref:298]'),
+        ]
+        result = self.wf.check_duplicate_publisher_by_raw(items)
+        self.assertEqual(len(result), 2)
+        self.assertIn([0, 2], result)
+        self.assertIn([1, 3], result)
+
+    def test_preserves_index_order(self):
+        """Indices in each group should be in order of first appearance."""
+        items = [
+            AgentItem('Springer [crossref:297]'),
+            AgentItem('Elsevier [crossref:298]'),
+            AgentItem('Springer [crossref:297]'),
+            AgentItem('Springer [crossref:297]'),
+        ]
+        result = self.wf.check_duplicate_publisher_by_raw(items)
+        self.assertEqual(len(result), 1)
+        self.assertEqual(result[0], [0, 2, 3])
+
+    def test_ids_only_duplicate(self):
+        """Publishers with only IDs (no name) and identical raw strings are duplicates."""
+        items = [
+            AgentItem('[crossref:297]'),
+            AgentItem('[crossref:297]'),
+        ]
+        result = self.wf.check_duplicate_publisher_by_raw(items)
+        self.assertEqual(len(result), 1)
+        self.assertEqual(result[0], [0, 1])
 
 
 if __name__ == '__main__':

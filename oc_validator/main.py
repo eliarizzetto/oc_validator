@@ -420,8 +420,21 @@ class Validator:
                             agents = row_obj.editor
                         
                         if agents:
-                            seen_ra_ids = set()
                             items = agents  # Already parsed list of AgentItem objects
+
+                            # Check in-field duplication based on shared RA IDs
+                            dup_groups = self.wellformed.check_duplicate_ra_by_id(items)
+                            for dup_indices in dup_groups:
+                                table = {row_idx: {field: dup_indices}}
+                                message = messages['m26']
+
+                                error = self.helper.create_error_dict(validation_level='csv_wellformedness',
+                                                                    error_type='error',
+                                                                    message=message,
+                                                                    error_label='duplicate_ra',
+                                                                    located_in='item',
+                                                                    table=table)
+                                jsonl_file.write(error)
 
                             for item_idx, item in enumerate(items):
                                 # Check orphan RA ID using the raw string
@@ -450,21 +463,6 @@ class Validator:
                                     jsonl_file.write(error)
 
                                 else:
-                                    
-                                    for pid in item.ids:
-                                        if pid not in seen_ra_ids:
-                                            seen_ra_ids.add(pid)
-                                        else:  # in-field duplication of the same author/editor (based on ID only)
-                                            table = {row_idx: {field: [i for i, v in enumerate(items) if pid in v._raw]}}
-                                            message = messages['m26']
-
-                                            error = self.helper.create_error_dict(validation_level='csv_wellformedness',
-                                                                                error_type='error',
-                                                                                message=message,
-                                                                                error_label='duplicate_ra',
-                                                                                located_in='item',
-                                                                                table=table)  # valid=False
-                                            jsonl_file.write(error)
 
                                     # Use structured object's ids attribute
                                     ids = item.ids
@@ -666,8 +664,22 @@ class Validator:
                         # Use structured object's parsed field
                         publishers = row_obj.publisher
                         if publishers:
-                            seen_pub_strs = set()
                             items = publishers  # Already parsed list of AgentItem objects
+
+                            # Check in-field duplication based on raw string exact match
+                            dup_groups = self.wellformed.check_duplicate_publisher_by_raw(items)
+                            for dup_indices in dup_groups:
+                                table = {row_idx: {field: dup_indices}}
+                                message = messages['m26']
+
+                                error = self.helper.create_error_dict(validation_level='csv_wellformedness',
+                                                                      error_type='error',
+                                                                      message=message,
+                                                                      error_label='duplicate_ra',
+                                                                      located_in='item',
+                                                                      table=table)
+                                jsonl_file.write(error)
+
                             for item_idx, item in enumerate(items):
                                 # Check orphan RA ID using the raw string
                                 if self.wellformed.orphan_ra_id(item._raw):
@@ -695,19 +707,6 @@ class Validator:
                                     jsonl_file.write(error)
 
                                 else:
-                                    if item._raw not in seen_pub_strs:
-                                        seen_pub_strs.add(item._raw)
-                                    else:  # in-field duplication of the same publisher (based on raw string exact match)
-                                        table = {row_idx: {field: [i for i, v in enumerate(items) if v._raw == item._raw]}}
-                                        message = messages['m26']
-
-                                        error = self.helper.create_error_dict(validation_level='csv_wellformedness',
-                                                                              error_type='error',
-                                                                              message=message,
-                                                                              error_label='duplicate_ra',
-                                                                              located_in='item',
-                                                                              table=table)  # valid=False
-                                        jsonl_file.write(error)
 
                                     # Use structured object's ids attribute
                                     ids = item.ids
