@@ -12,14 +12,13 @@
 # ACTION, ARISING OUT OF OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS
 # SOFTWARE.
 
-from re import match, search, sub
+from re import match, search, sub, findall
 from roman import fromRoman, InvalidRomanNumeralError
 from oc_validator.helper import Helper
 from oc_validator.lmdb_cache import LmdbCache, LmdbUnionFind, InMemoryCache, InMemoryUnionFind
 from json import load
 from os.path import join, dirname, abspath
 from typing import Generator, Union
-
 
 class Wellformedness:
     """
@@ -237,7 +236,12 @@ class Wellformedness:
             integers, ``False`` if the interval is definitively invalid.
         :rtype: bool
         """
-
+        
+        def extract_segments(text):
+            letters = findall(r'[a-zA-Z]+', text)
+            numbers = findall(r'\d+', text)
+            return letters, numbers
+        
         both_num = page_interval.split('-')
         converted = []
         for num_str in both_num:
@@ -248,10 +252,24 @@ class Wellformedness:
                     converted.append(fromRoman(num_str.upper()))
                 except InvalidRomanNumeralError:
                     if both_num[0] == both_num[1]:
-                        return True  # ignore cases with identical alphanumeric strings (e.g. "a12-a24")
-                    return False
+                        return True  # ignore cases with identical alphanumeric strings (e.g. "a12-a12")
+                    
+                    elif both_num[0].isalnum() and both_num[1].isalnum():
+                        alph1, num1 = extract_segments(both_num[0])
+                        alph2, num2 = extract_segments(both_num[1])
+                        if [l for l in (alph1, num1, alph2, num2) if len(l)>1]:
+                            return False # exclude strs with non-contiguous alphabetic segments (e.g. 'a123b-c456')
+                        char1 = alph1[0].lower() if alph1 else ''
+                        char2 = alph2[0].lower() if alph2 else ''
+                        dig1 = int(num1[0]) if num1 else 0
+                        dig2 = int(num2[0]) if num2 else 0
+                        if ((char1 == char2) or (char1 and not char2)) and (dig1 <= dig2):
+                            return True
+                        return False
+                    else:
+                        return False
 
-        if converted[0] <= converted[1]:  # TODO: consider creating another function, warning about cases where start page == end page
+        if converted[0] <= converted[1]:
             return True
         else:
             return False

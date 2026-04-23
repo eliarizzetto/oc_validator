@@ -373,6 +373,7 @@ class TestWellformednessPage(unittest.TestCase):
 
     def test_valid_same_page(self):
         self.assertTrue(self.wf.wellformedness_page('5-5'))
+        self.assertTrue(self.wf.wellformedness_page('100-100'))
 
     def test_valid_single_digit_pages(self):
         self.assertTrue(self.wf.wellformedness_page('3-9'))
@@ -387,12 +388,26 @@ class TestWellformednessPage(unittest.TestCase):
     def test_valid_roman_mixed_case(self):
         self.assertTrue(self.wf.wellformedness_page('i-X'))
 
+    def test_valid_roman_complex(self):
+        self.assertTrue(self.wf.check_page_interval('x-xii'))
+
     # --- Valid cases: alphanumeric ---
     def test_valid_alphanumeric_range(self):
         self.assertTrue(self.wf.wellformedness_page('a1-b2'))
 
     def test_valid_alphanumeric_prefix(self):
         self.assertTrue(self.wf.wellformedness_page('A1-A10'))
+
+    def test_valid_same_alnum_prefix(self):
+        self.assertTrue(self.wf.check_page_interval('e100-e100'))
+
+    def test_valid_alnum_range(self):
+        self.assertTrue(self.wf.check_page_interval('e100-e120'))
+
+    def test_valid_mixed_alphanumeric(self):
+        self.assertTrue(self.wf.check_page_interval('e40-60'))
+
+    # --- Additional invalid cases ---
 
     # --- Invalid cases ---
     def test_invalid_empty(self):
@@ -421,6 +436,31 @@ class TestWellformednessPage(unittest.TestCase):
 
     def test_valid_greek_alphanum(self):
         self.assertTrue(self.wf.wellformedness_page('\u03b11-\u03b12'))  # α1-α2
+
+    def test_invalid_mixed_prefix_roman(self):
+        self.assertFalse(self.wf.check_page_interval('Ex-xii'))
+
+    def test_invalid_numeric_descending(self):
+        self.assertFalse(self.wf.check_page_interval('40-20'))
+
+    def test_invalid_roman_descending_upper(self):
+        self.assertFalse(self.wf.check_page_interval('XII-X'))
+
+    def test_invalid_alpha_numeric_descending_mixed(self):
+        self.assertFalse(self.wf.check_page_interval('E400-200'))
+
+    def test_invalid_alpha_numeric_descending_same_prefix(self):
+        self.assertFalse(self.wf.check_page_interval('E400-E200'))
+
+    def test_invalid_different_prefixes(self):
+        self.assertFalse(self.wf.check_page_interval('A200-E300'))
+
+    def test_invalid_different_prefixes_descending(self):
+        self.assertFalse(self.wf.check_page_interval('A400-E300'))
+    
+    def test_invalid_multiple_alpha_segments(self):
+        self.assertFalse(self.wf.check_page_interval('a123b-c456d123'))
+        self.assertFalse(self.wf.check_page_interval('a123b-c456'))
 
 
 class TestCheckPageInterval(unittest.TestCase):
