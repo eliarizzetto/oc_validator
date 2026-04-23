@@ -15,18 +15,36 @@ pip install oc_validator
 
 ## Usage
 
-The validation process can be executed from the CLI by running the following command:
+The CLI provides two subcommands:
+
+- **`validate`** — validate a single META-CSV or CITS-CSV document.
+- **`closure`** — validate a META-CSV and CITS-CSV pair together, checking transitive closure.
 
 ```bash
-python -m oc_validator.main -i <input csv file path> -o <output dir path> [-m] [-s] [--use-lmdb [--map-size <GiB>] [--cache-dir <dir>]]
+oc_validator validate -i <input csv file path> -o <output dir path> [-m] [-s] [--use-lmdb [--map-size <GiB>] [--cache-dir <dir>]]
+
+oc_validator closure --meta <meta csv file path> --meta-out <meta output dir> --cits <cits csv file path> --cits-out <cits output dir> [--strict-sequentiality] [-m] [-s] [--use-lmdb [--map-size <GiB>] [--cache-dir <dir>]]
 ```
 
-### Required Parameters
+Alternatively, the program can also be invoked as a Python module:
+
+```bash
+python -m oc_validator.main -i <input csv file path> -o <output dir path> [options]
+```
+
+### Required Parameters — `validate`
 
 - `-i`, `--input`: The path to the CSV file to validate.
 - `-o`, `--output`: The path to the directory where the output JSON-Lines file and .txt file will be stored.
 
-### Optional Parameters
+### Required Parameters — `closure`
+
+- `--meta`: The path to the META-CSV file.
+- `--meta-out`: The output directory for META-CSV validation results.
+- `--cits`: The path to the CITS-CSV file.
+- `--cits-out`: The output directory for CITS-CSV validation results.
+
+### Optional Parameters (both subcommands)
 
 - `-m`, `--use-meta`: Enables the use of the OC Meta endpoint instead of external APIs to check if an ID exists (by checking if it is registered in OpenCitations Meta). If included, this option allows to fasten the whole process, since querying Meta is faster than querying external APIs, but results might not be the most up to date.
 - `-s`, `--no-id-existence`: Skips the check for ID existence altogether, ensuring that neither the Meta endpoint nor any external APIs are used during validation. This allows for a much shorter execution time, but does not make sure that all the submitted IDs actually refer to real-world entities.
@@ -34,30 +52,46 @@ python -m oc_validator.main -i <input csv file path> -o <output dir path> [-m] [
 - `--map-size`: Specifies the maximum size of each LMDB environment in gibibytes (GiB). Defaults to 1. Increase this value if you encounter `lmdb.MapFullError` during validation of very large files. NOTE: On Windows, you must have enough free disk space for at least 4x `map_size` per each `Validator` object.
 - `--cache-dir`: Specifies the base directory under which all LMDB cache directories are created. Defaults to the current working directory. The validator creates and automatically cleans up temporary directories inside this path.
 
+### Optional Parameters — `closure` only
+
+- `--strict-sequentiality`: Skip the transitive closure check if the individual validations of the metadata and/or citations tables already report errors. By default the closure check is always performed.
+
 ### Example Usage from CLI
 
-To validate a CSV file and output the results to a specified directory (with optional parameters set to default values, i.e. checking for the existence of IDs via querying external APIs):
+To validate a single CSV file and output the results to a specified directory (with optional parameters set to default values, i.e. checking for the existence of IDs via querying external APIs):
 
 ```bash
-python -m oc_validator.main -i path/to/input.csv -o path/to/output_dir
+oc_validator validate -i path/to/input.csv -o path/to/output_dir
 ```
 
 To use OC Meta endpoint instead of external APIs to verify the existence of the IDs:
 
 ```bash
-python -m oc_validator.main -i path/to/input.csv -o path/to/output_dir -m
+oc_validator validate -i path/to/input.csv -o path/to/output_dir -m
 ```
 
 To skip all ID existence verification:
 
 ```bash
-python -m oc_validator.main -i path/to/input.csv -o path/to/output_dir -s
+oc_validator validate -i path/to/input.csv -o path/to/output_dir -s
 ```
 
 To validate a large CSV file using LMDB-backed caching (with a 4 GiB map size and a custom cache directory):
 
 ```bash
-python -m oc_validator.main -i path/to/large_input.csv -o path/to/output_dir --use-lmdb --map-size 4 --cache-dir /tmp/lmdb_cache
+oc_validator validate -i path/to/large_input.csv -o path/to/output_dir --use-lmdb --map-size 4 --cache-dir /tmp/lmdb_cache
+```
+
+To validate a META-CSV and CITS-CSV pair together, checking transitive closure:
+
+```bash
+oc_validator closure --meta path/to/meta.csv --meta-out path/to/meta_output --cits path/to/cits.csv --cits-out path/to/cits_output
+```
+
+Same as above, but skipping the closure check if individual validations already report errors:
+
+```bash
+oc_validator closure --meta path/to/meta.csv --meta-out path/to/meta_output --cits path/to/cits.csv --cits-out path/to/cits_output --strict-sequentiality
 ```
 
 ### Programmatic Usage
