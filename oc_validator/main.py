@@ -236,6 +236,7 @@ class Validator:
             return result
         finally:
             logger.info(f"Cleaning up resources for {self.table_to_process} table...")
+            self.existence.close()
             if self.id_cache._is_open:
                 self.id_cache.close()
             logger.info(f"Process finished in {(time() - start)/60:.2f} minutes.")
@@ -278,6 +279,10 @@ class Validator:
         # Open JSON-L file for streaming output
         with JSONLStreamIO(self.output_fp_json, 'a') as jsonl_file:
             for row_idx, row in enumerate(tqdm(self.csv_stream.stream(), desc="Validating")):
+                # Recreate SPARQL client periodically to prevent memory growth
+                if row_idx > 0 and row_idx % 10000 == 0 and self.existence.use_meta_endpoint:
+                    self.existence._recreate_sparql_client()
+
                 row_ok = True  # switch for row well-formedness
                 id_ok = True  # switch for id field well-formedness
                 type_ok = True  # switch for type field well-formedness
@@ -818,6 +823,10 @@ class Validator:
         # Open JSON-L file for streaming output
         with JSONLStreamIO(self.output_fp_json, 'a') as jsonl_file:
             for row_idx, row in enumerate(tqdm(self.csv_stream.stream(), desc="Validating")):
+                # Recreate SPARQL client periodically to prevent memory growth
+                if row_idx > 0 and row_idx % 10000 == 0 and self.existence.use_meta_endpoint:
+                    self.existence._recreate_sparql_client()
+
                 # Collect ID data for duplicate detection
                 citing_id = row.get('citing_id', '')
                 cited_id = row.get('cited_id', '')

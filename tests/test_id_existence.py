@@ -1,5 +1,6 @@
 import unittest
 from unittest.mock import patch, MagicMock
+from sparqlite import SPARQLError
 from oc_validator.id_existence import IdExistence
 
 
@@ -161,41 +162,35 @@ class TestIdExistenceQueryMetaTriplestore(unittest.TestCase):
     def setUp(self):
         self.existence = IdExistence(use_meta_endpoint=True)
 
-    @patch('oc_validator.id_existence.time.sleep')
-    def test_successful_query_returns_boolean(self, mock_sleep):
-        """Test that a successful SPARQL query returns the boolean result."""
-        mock_result = MagicMock()
-        mock_result.convert.return_value = {'boolean': True}
-        with patch.object(self.existence.sparql, 'query', return_value=mock_result):
+    def test_successful_query_returns_true(self):
+        """Test that a successful SPARQL ASK query returns True."""
+        with patch.object(self.existence.sparql, 'ask', return_value=True):
             result = self.existence.query_meta_triplestore('doi:10.1234/abc')
             self.assertTrue(result)
 
-    @patch('oc_validator.id_existence.time.sleep')
-    def test_not_found_returns_false(self, mock_sleep):
-        mock_result = MagicMock()
-        mock_result.convert.return_value = {'boolean': False}
-        with patch.object(self.existence.sparql, 'query', return_value=mock_result):
+    def test_not_found_returns_false(self):
+        """Test that an ASK query returning False yields False."""
+        with patch.object(self.existence.sparql, 'ask', return_value=False):
             result = self.existence.query_meta_triplestore('doi:10.1234/abc')
             self.assertFalse(result)
 
-    @patch('oc_validator.id_existence.time.sleep')
-    def test_retry_on_failure(self, mock_sleep):
-        """Test that the query retries on transient failures."""
-        mock_result = MagicMock()
-        mock_result.convert.return_value = {'boolean': True}
-        # First call raises, second succeeds
-        with patch.object(self.existence.sparql, 'query', side_effect=[Exception('Network error'), mock_result]):
-            result = self.existence.query_meta_triplestore('doi:10.1234/abc', retries=3, delay=0.01)
-            self.assertTrue(result)
-            mock_sleep.assert_called_once_with(0.01)
-
-    @patch('oc_validator.id_existence.time.sleep')
-    def test_max_retries_returns_false(self, mock_sleep):
-        """Test that after max retries, returns False."""
-        with patch.object(self.existence.sparql, 'query', side_effect=Exception('Network error')):
-            result = self.existence.query_meta_triplestore('doi:10.1234/abc', retries=2, delay=0.01)
+    def test_sparql_error_returns_false(self):
+        """Test that a SPARQLError after retries returns False."""
+        with patch.object(
+            self.existence.sparql, 'ask',
+            side_effect=SPARQLError('Server error: 503')
+        ):
+            result = self.existence.query_meta_triplestore('doi:10.1234/abc')
             self.assertFalse(result)
-            self.assertEqual(mock_sleep.call_count, 1)  # one sleep between retries
+
+    def test_sparql_error_is_logged(self):
+        """Test that SPARQLError is logged as a warning."""
+        with patch.object(
+            self.existence.sparql, 'ask',
+            side_effect=SPARQLError('Server error: 503')
+        ), self.assertLogs('oc_validator', level='WARNING') as cm:
+            self.existence.query_meta_triplestore('doi:10.1234/abc')
+            self.assertTrue(any('SPARQL query failed' in msg for msg in cm.output))
 
 
 class TestIdExistenceQueryOmidInMeta(unittest.TestCase):
@@ -204,45 +199,29 @@ class TestIdExistenceQueryOmidInMeta(unittest.TestCase):
     def setUp(self):
         self.existence = IdExistence(use_meta_endpoint=True)
 
-    @patch('oc_validator.id_existence.time.sleep')
-    def test_omid_found(self, mock_sleep):
-        mock_result = MagicMock()
-        mock_result.convert.return_value = {'boolean': True}
-        with patch.object(self.existence.sparql, 'query', return_value=mock_result):
+    def test_omid_found(self):
+        with patch.object(self.existence.sparql, 'ask', return_value=True):
             result = self.existence.query_omid_in_meta('omid:br/0610116033')
             self.assertTrue(result)
 
-    @patch('oc_validator.id_existence.time.sleep')
-    def test_omid_not_found(self, mock_sleep):
-        mock_result = MagicMock()
-        mock_result.convert.return_value = {'boolean': False}
-        with patch.object(self.existence.sparql, 'query', return_value=mock_result):
+    def test_omid_not_found(self):
+        with patch.object(self.existence.sparql, 'ask', return_value=False):
             result = self.existence.query_omid_in_meta('omid:br/0610116033')
             self.assertFalse(result)
 
-    @patch('oc_validator.id_existence.time.sleep')
-    def test_omid_retry_on_failure(self, mock_sleep):
-        mock_result = MagicMock()
-        mock_result.convert.return_value = {'boolean': True}
-        with patch.object(self.existence.sparql, 'query', side_effect=[Exception('fail'), mock_result]):
-            result = self.existence.query_omid_in_meta('omid:br/0610116033', retries=3, delay=0.01)
-            self.assertTrue(result)
-
-    @patch('oc_validator.id_existence.time.sleep')
-    def test_omid_max_retries_returns_false(self, mock_sleep):
-        with patch.object(self.existence.sparql, 'query', side_effect=Exception('fail')):
-            result = self.existence.query_omid_in_meta('omid:br/0610116033', retries=2, delay=0.01)
+    def test_omid_sparql_error_returns_false(self):
+        with patch.object(
+            self.existence.sparql, 'ask',
+            side_effect=SPARQLError('Server error: 503')
+        ):
+            result = self.existence.query_omid_in_meta('omid:br/0610116033')
             self.assertFalse(result)
 
     def test_omid_strips_prefix_correctly(self):
         """Verify the SPARQL query uses the ID without the omid: prefix."""
-        mock_result = MagicMock()
-        mock_result.convert.return_value = {'boolean': True}
-        with patch.object(self.existence.sparql, 'setQuery') as mock_set, \
-             patch.object(self.existence.sparql, 'setReturnFormat'), \
-             patch.object(self.existence.sparql, 'query', return_value=mock_result):
+        with patch.object(self.existence.sparql, 'ask', return_value=True) as mock_ask:
             self.existence.query_omid_in_meta('omid:br/0610116033')
-            query_arg = mock_set.call_args[0][0]
+            query_arg = mock_ask.call_args[0][0]
             self.assertIn('br/0610116033', query_arg)
             self.assertNotIn('omid:br/0610116033', query_arg)
 

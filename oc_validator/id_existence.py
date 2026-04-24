@@ -14,8 +14,7 @@
 
 from oc_ds_converter.oc_idmanager import doi, isbn, issn, orcid, pmcid, pmid, ror, url, viaf, wikidata, wikipedia, \
     openalex, crossref, jid, arxiv
-from SPARQLWrapper import SPARQLWrapper, JSON
-import time
+from sparqlite import SPARQLClient, SPARQLError
 import logging
 
 logger = logging.getLogger('oc_validator')
@@ -53,8 +52,16 @@ class IdExistence:
         self.jid_mngr = jid.JIDManager()
         self.arxiv_mngr = arxiv.ArXivManager()
         self.use_meta_endpoint = use_meta_endpoint
-        self.sparql = SPARQLWrapper("https://sparql.opencitations.net/meta")
-        self.sparql.addCustomHttpHeader('User-Agent', 'oc_validator')
+        self.sparql = SPARQLClient("https://sparql.opencitations.net/meta")
+
+    def close(self) -> None:
+        """Close the SPARQL client and release resources."""
+        self.sparql.close()
+
+    def _recreate_sparql_client(self) -> None:
+        """Close and recreate the SPARQL client to release accumulated resources."""
+        self.sparql.close()
+        self.sparql = SPARQLClient("https://sparql.opencitations.net/meta")
 
     def check_id_existence(self, id: str) -> bool:
         """
@@ -127,19 +134,16 @@ class IdExistence:
             return False
         return vldt.exists(id.replace(oc_prefix, '', 1))
 
-    def query_meta_triplestore(self, id: str, retries: int = 3, delay: float = 2.0) -> bool:
+    def query_meta_triplestore(self, id: str) -> bool:
         """
         Check whether an identifier exists in the OpenCitations Meta triplestore via SPARQL.
 
-        Retries the query up to *retries* times with a *delay* (in seconds)
-        between attempts on transient failures.
+        Uses the ``sparqlite`` client's built-in retry with exponential backoff
+        for transient failures. Returns ``False`` if the query fails after all
+        retries are exhausted.
 
         :param id: The identifier string, including its prefix.
         :type id: str
-        :param retries: Maximum number of query attempts. Defaults to 3.
-        :type retries: int
-        :param delay: Seconds to wait between retries. Defaults to 2.0.
-        :type delay: float
         :return: ``True`` if the triplestore confirms the ID exists, ``False`` otherwise.
         :rtype: bool
         """
@@ -147,7 +151,6 @@ class IdExistence:
         lookup_id = id.replace(oc_prefix, '', 1)
         datacite_id_scheme = oc_prefix[:-1]  # same as OC prefix but without the ":"
 
-        sparql = self.sparql
         q = '''
         PREFIX datacite: <http://purl.org/spar/datacite/>
         PREFIX literal: <http://www.essepuntato.it/2010/06/literalreification/>
@@ -161,60 +164,37 @@ class IdExistence:
         }
         ''' % (lookup_id, lookup_id, datacite_id_scheme)
 
-        for attempt in range(retries):
-            try:
-                sparql.setQuery(q)
-                sparql.setReturnFormat(JSON)
-                result: dict = sparql.query().convert()
-                return result.get('boolean')
-            
-            except Exception as e:
-                logger.warning("SPARQL query attempt %d/%d failed for '%s': %s", attempt + 1, retries, id, e)
-                if attempt < retries - 1:
-                    time.sleep(delay)  # wait before retrying
-                else:
-                    logger.warning("Max retries reached for SPARQL query on '%s'. Query failed.", id)
-                    return False
+        try:
+            return self.sparql.ask(q)
+        except SPARQLError as e:
+            logger.warning("SPARQL query failed for '%s' after retries: %s", id, e)
+            return False
 
-    def query_omid_in_meta(self, id: str, retries: int = 3, delay: float = 2.0) -> bool:
+    def query_omid_in_meta(self, id: str) -> bool:
         """
         Check whether an OMID is registered in the OpenCitations Meta triplestore.
 
-        This uses a dedicated SPARQL query that checks for the OMID as both
-        subject and object. Retries on transient failures.
+        Uses a dedicated SPARQL query that checks for the OMID as both
+        subject and object. Returns ``False`` if the query fails after all
+        retries are exhausted.
 
         :param id: The OMID string, including the ``omid:`` prefix.
         :type id: str
-        :param retries: Maximum number of query attempts. Defaults to 3.
-        :type retries: int
-        :param delay: Seconds to wait between retries. Defaults to 2.0.
-        :type delay: float
         :return: ``True`` if the OMID exists in Meta, ``False`` otherwise.
         :rtype: bool
         """
         lookup_id = id.replace('omid:', '', 1)
 
-        sparql = self.sparql
-
         q = '''
         ASK WHERE {
-            { <https://w3id.org/oc/meta/%s> ?p ?o } 
-        UNION 
+            { <https://w3id.org/oc/meta/%s> ?p ?o }
+        UNION
             { ?s ?p <https://w3id.org/oc/meta/%s> }
         }
         ''' % (lookup_id, lookup_id)
 
-        for attempt in range(retries):
-            try:
-                sparql.setQuery(q)
-                sparql.setReturnFormat(JSON)
-                result: dict = sparql.query().convert()
-                return result.get('boolean', False)
-            
-            except Exception as e:
-                logger.warning("OMID SPARQL query attempt %d/%d failed for '%s': %s", attempt + 1, retries, id, e)
-                if attempt < retries - 1:
-                    time.sleep(delay)  # wait before retrying
-                else:
-                    logger.warning("Max retries reached for OMID SPARQL query on '%s'. Query failed.", id)
-                    return False
+        try:
+            return self.sparql.ask(q)
+        except SPARQLError as e:
+            logger.warning("OMID SPARQL query failed for '%s' after retries: %s", id, e)
+            return False
