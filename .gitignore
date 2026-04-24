@@ -27,3 +27,8 @@ storage/
 .clineignore
 cline/
 *.cline*
+
+# github actions
+.coverage
+htmlcov/
+coverage_output.txt
