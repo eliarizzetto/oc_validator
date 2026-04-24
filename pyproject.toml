@@ -1,6 +1,6 @@
 [project]
 name = "oc-validator"
-version = "0.3.14a0"
+version = "1.0.0"
 description = "A software to validate CSV documents storing citation data and bibliographic metadata according to the OpenCitations Data Model."
 authors = [
     { name = "Elia Rizzetto", email = "elia.rizzetto@gmail.com" },

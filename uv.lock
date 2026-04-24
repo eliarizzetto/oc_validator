@@ -1493,7 +1493,7 @@ wheels = [
 
 [[package]]
 name = "oc-validator"
-version = "0.3.14a0"
+version = "1.0.0"
 source = { editable = "." }
 dependencies = [
     { name = "beautifulsoup4" },
