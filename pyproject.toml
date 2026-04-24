@@ -17,9 +17,6 @@ oc-ds-converter = {version = "^1.0.4", python = ">=3.9,<3.14"}
 lmdb = "^2.0.0"
 
 
-[tool.poetry.group.dev.dependencies]
-jsonschema = "^4.17.3"
-
 [tool.poetry.scripts]
 oc_validator = "oc_validator.cli:main"
 
