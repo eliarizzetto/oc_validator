@@ -1,25 +1,41 @@
-[tool.poetry]
+[project]
 name = "oc-validator"
 version = "0.3.14a0"
 description = "A software to validate CSV documents storing citation data and bibliographic metadata according to the OpenCitations Data Model."
-authors = ["Elia Rizzetto <elia.rizzetto@gmail.com>", "Silvio Peroni <silvio.peroni@unibo.it>"]
+authors = [
+    { name = "Elia Rizzetto", email = "elia.rizzetto@gmail.com" },
+    { name = "Silvio Peroni", email = "silvio.peroni@unibo.it" },
+]
+requires-python = ">=3.9,<4"
 readme = "README.md"
-packages = [{include = "oc_validator"}]
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
+]
+dependencies = [
+    "pyyaml>=6.0,<7",
+    "roman>=4.0,<5",
+    "sparqlwrapper>=2.0.0,<3",
+    "beautifulsoup4>=4.12.3,<5",
+    "jinja2>=3.1.4,<4",
+    "oc-ds-converter>=1.0.4,<2 ; python_full_version >= '3.9' and python_full_version < '3.14'",
+    "lmdb>=2.0.0,<3",
+]
 
-[tool.poetry.dependencies]
-python = "^3.9"
-pyyaml = "^6.0"
-roman = "^4.0"
-sparqlwrapper = "^2.0.0"
-beautifulsoup4 = "^4.12.3"
-jinja2 = "^3.1.4"
-oc-ds-converter = {version = "^1.0.4", python = ">=3.9,<3.14"}
-lmdb = "^2.0.0"
-
-
-[tool.poetry.scripts]
+[project.scripts]
 oc_validator = "oc_validator.cli:main"
 
+[tool.uv]
+
+[tool.uv.build-backend]
+module-name = ["oc_validator"]
+module-root = ""
+
 [build-system]
-requires = ["poetry-core"]
-build-backend = "poetry.core.masonry.api"
+requires = ["uv_build>=0.11.7,<0.12.0"]
+build-backend = "uv_build"

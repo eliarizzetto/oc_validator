@@ -8,9 +8,34 @@ To be processed by the validator, the tables must be built as either CITS-CSV or
 [^2]: Massari, Arcangelo. 2022. ‘How to Produce Well-Formed CSV Files for OpenCitations’. https://doi.org/10.5281/zenodo.6597141.
 
 ## Installation
-The library can be installed from **pip**:
+The library can be installed from **PyPI**:
 ```
 pip install oc_validator
+```
+
+## Contributing / Development
+
+This project uses [uv](https://docs.astral.sh/uv/) for dependency management and building. To set up a development environment:
+
+```bash
+# Clone the repository
+git clone https://github.com/opencitations/oc_validator.git
+cd oc_validator
+
+# Create a virtual environment and install dependencies
+uv sync
+```
+
+### Running tests
+
+```bash
+uv run python -m unittest discover -s tests
+```
+
+### Building
+
+```bash
+uv build
 ```
 
 ## Usage
