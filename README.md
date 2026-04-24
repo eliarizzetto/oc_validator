@@ -1,6 +1,11 @@
 # oc_validator
 
-**oc_validator** is a Python (≥3.9) library to validate CSV documents storing citation data and bibliographic metadata.
+[![Run tests](https://github.com/opencitations/oc_validator/actions/workflows/test.yml/badge.svg)](https://github.com/opencitations/oc_validator/actions/workflows/test.yml)
+[![Coverage](https://byob.yarr.is/opencitations/oc_validator/coverage)](https://opencitations.github.io/oc_validator/)
+![Python versions](https://img.shields.io/badge/python-3.11%20%7C%203.12%20%7C%203.13-blue)
+[![License: ISC](https://img.shields.io/badge/license-ISC-green.svg)](LICENSE)
+
+**oc_validator** is a Python (≥3.11) library to validate CSV documents storing citation data and bibliographic metadata.
 To be processed by the validator, the tables must be built as either CITS-CSV or META-CSV tables, defined in two specification documents[^1][^2].
 
 [^1]: Massari, Arcangelo, and Ivan Heibi. 2022. ‘How to Structure Citations Data and Bibliographic Metadata in the OpenCitations Accepted Format’. https://doi.org/10.48550/arXiv.2206.03971.
