@@ -1,29 +1,47 @@
-# Copyright (c) 2023, OpenCitations <contact@opencitations.net>
+# ISC License
 #
-# Permission to use, copy, modify, and/or distribute this software for any purpose
-# with or without fee is hereby granted, provided that the above copyright notice
-# and this permission notice appear in all copies.
+# Copyright (c) 2023-2026, Elia Rizzetto, Silvio Peroni
+#
+# Permission to use, copy, modify, and/or distribute this software for any
+# purpose with or without fee is hereby granted, provided that the above
+# copyright notice and this permission notice appear in all copies.
 #
 # THE SOFTWARE IS PROVIDED "AS IS" AND THE AUTHOR DISCLAIMS ALL WARRANTIES WITH
 # REGARD TO THIS SOFTWARE INCLUDING ALL IMPLIED WARRANTIES OF MERCHANTABILITY AND
-# FITNESS. IN NO EVENT SHALL THE AUTHOR BE LIABLE FOR ANY SPECIAL, DIRECT, INDIRECT,
-# OR CONSEQUENTIAL DAMAGES OR ANY DAMAGES WHATSOEVER RESULTING FROM LOSS OF USE,
-# DATA OR PROFITS, WHETHER IN AN ACTION OF CONTRACT, NEGLIGENCE OR OTHER TORTIOUS
-# ACTION, ARISING OUT OF OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS
-# SOFTWARE.
+# FITNESS. IN NO EVENT SHALL THE AUTHOR BE LIABLE FOR ANY SPECIAL, DIRECT,
+# INDIRECT, OR CONSEQUENTIAL DAMAGES OR ANY DAMAGES WHATSOEVER RESULTING FROM
+# LOSS OF USE, DATA OR PROFITS, WHETHER IN AN ACTION OF CONTRACT, NEGLIGENCE OR
+# OTHER TORTIOUS ACTION, ARISING OUT OF OR IN CONNECTION WITH THE USE OR
+# PERFORMANCE OF THIS SOFTWARE.
 
 class Semantics:
-    def __init__(self):
+    """
+    Validates the semantic compatibility between identifier schemes and
+    resource types in META-CSV rows.
+    """
+
+    def __init__(self) -> None:
+        """
+        Initialise the Semantics checker.
+
+        :rtype: None
+        """
         pass
 
     def check_semantics(self, row: dict, alignment: dict) -> dict:
         """
-        Checks if all the IDs specified in 'id' are compatible with the value of 'type'.
-        Return a dictionary with the fields and items involved in the error, or an empty
-        dictionary if no error was found.
-        :param row: (dict) the row in the table
-        :param alignment: (dict) the possible associations between a type and a set of IDs
-        :return: (dict)
+        Check whether all identifiers in the ``id`` field are compatible with the ``type`` value.
+
+        Uses an alignment dictionary that maps each resource type to the set of
+        allowed identifier schemes.
+
+        :param row: A dictionary representing a single CSV row.
+        :type row: dict
+        :param alignment: Mapping from resource type to the set of accepted ID schemes.
+        :type alignment: dict
+        :return: Dictionary locating incompatible fields and items, or an empty
+            dictionary if no semantic errors were found.
+        :rtype: dict
         """
         invalid_row = {}
         row_type = row['type']

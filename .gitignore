@@ -8,6 +8,7 @@ dist/
 
 #virtual environment
 myenv
+venv
 
 #tests and output directories for development
 prove.py
@@ -15,8 +16,19 @@ output
 validation_output
 tmp
 oc_validator/interface/tmp.py
+data
 
 **/__pycache__/
 
 # Storage dir for validated IDs
 storage/
+
+# cline
+.clineignore
+cline/
+*.cline*
+
+# github actions
+.coverage
+htmlcov/
+coverage_output.txt

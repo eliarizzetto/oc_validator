@@ -14,17 +14,27 @@
 
 from oc_ds_converter.oc_idmanager import doi, isbn, issn, orcid, pmcid, pmid, ror, url, viaf, wikidata, wikipedia, \
     openalex, crossref, jid, arxiv
-from SPARQLWrapper import SPARQLWrapper, JSON
-import time
+from sparqlite import SPARQLClient, SPARQLError
+import logging
+
+logger = logging.getLogger('oc_validator')
 
 
 class IdExistence:
+    """
+    Checks whether an external identifier actually exists by querying either
+    the appropriate external service API, the OpenCitations Meta triplestore,
+    or both.
+    """
 
-    def __init__(self, use_meta_endpoint=True):
+    def __init__(self, use_meta_endpoint: bool = True) -> None:
         """
-        Checks whether an external ID exists or not, by verifying it is registered as such in the appropriate service.
-        :param use_meta_endpoint: indicates whether or not to look for an ID in OC Meta triplestore via SPARQL
-        endpoint.
+        Initialise ID managers and the SPARQL endpoint for existence checks.
+
+        :param use_meta_endpoint: Whether to query the OC Meta triplestore
+            before falling back to external services. Defaults to ``True``.
+        :type use_meta_endpoint: bool
+        :rtype: None
         """
         self.doi_mngr = doi.DOIManager()
         self.isbn_mngr = isbn.ISBNManager()
@@ -42,18 +52,30 @@ class IdExistence:
         self.jid_mngr = jid.JIDManager()
         self.arxiv_mngr = arxiv.ArXivManager()
         self.use_meta_endpoint = use_meta_endpoint
-        self.sparql = SPARQLWrapper("https://opencitations.net/meta/sparql")
-        self.sparql.addCustomHttpHeader('Authorization', '4c793897-7787-43ff-b7fa-00aaf7ddf7ed')
+        self.sparql = SPARQLClient("https://sparql.opencitations.net/meta")
 
-    def check_id_existence(self, id:str):
+    def close(self) -> None:
+        """Close the SPARQL client and release resources."""
+        self.sparql.close()
+
+    def _recreate_sparql_client(self) -> None:
+        """Close and recreate the SPARQL client to release accumulated resources."""
+        self.sparql.close()
+        self.sparql = SPARQLClient("https://sparql.opencitations.net/meta")
+
+    def check_id_existence(self, id: str) -> bool:
         """
-        Queries a database to look for the ID passed as argument (with its prefix included). If
-        IdExistence.use_meta_endpoint is set to False, it queries only external services and directly returns
-        the output of ID.Existence.query_external_service(). If IdExistence.use_meta_endpoint is set to True, it first
-        queries OC Meta's SPARQL endpoint (calling IdExistence.query_meta_triplestore()): if the ID is already
-        present in Meta, return True; else, queries external service and return the result of this last query.
-        :param id: the string of the ID (prefix included)
-        :return: bool
+        Check whether an identifier exists in external services or Meta.
+
+        If ``use_meta_endpoint`` is ``False``, only external services are queried.
+        If ``True``, the OC Meta triplestore is queried first; if the ID is found
+        there, ``True`` is returned immediately. Otherwise, the external service
+        is queried as a fallback.
+
+        :param id: The identifier string, including its prefix.
+        :type id: str
+        :return: ``True`` if the identifier is confirmed to exist, ``False`` otherwise.
+        :rtype: bool
         """
         if id.startswith('temp:') or id.startswith('local:'): # temp: and local: internal IDs are always considered as exisiting
             return True
@@ -64,12 +86,17 @@ class IdExistence:
             return meta_response if meta_response is True else self.query_external_service(id)
         return self.query_external_service(id)
 
-    def query_external_service(self, id: str):
+    def query_external_service(self, id: str) -> bool:
         """
-        Checks if a specific identifier is registered in the service it is provided by, by a request to the relative API,
-        calling the .exists() method from every IdManager module.
-        :param id: the string of the ID (prefix included)
-        :return: bool
+        Check whether an identifier is registered in its native service.
+
+        Dispatches to the appropriate manager's ``exists()`` method based on
+        the identifier prefix.
+
+        :param id: The identifier string, including its prefix.
+        :type id: str
+        :return: ``True`` if the identifier exists in the external service, ``False`` otherwise.
+        :rtype: bool
         """
         oc_prefix = id[:(id.index(':') + 1)]
 
@@ -107,17 +134,23 @@ class IdExistence:
             return False
         return vldt.exists(id.replace(oc_prefix, '', 1))
 
-    def query_meta_triplestore(self, id:str, retries: int = 3, delay: float = 2.0):
+    def query_meta_triplestore(self, id: str) -> bool:
         """
-        Checks if an ID exists by looking it up in the OpenCitations Meta triplestore via a SPARQL query to Meta's endpoint.
-        :param id: the string of the ID (prefix included)
-        :return: bool
+        Check whether an identifier exists in the OpenCitations Meta triplestore via SPARQL.
+
+        Uses the ``sparqlite`` client's built-in retry with exponential backoff
+        for transient failures. Returns ``False`` if the query fails after all
+        retries are exhausted.
+
+        :param id: The identifier string, including its prefix.
+        :type id: str
+        :return: ``True`` if the triplestore confirms the ID exists, ``False`` otherwise.
+        :rtype: bool
         """
         oc_prefix = id[:(id.index(':') + 1)]
         lookup_id = id.replace(oc_prefix, '', 1)
         datacite_id_scheme = oc_prefix[:-1]  # same as OC prefix but without the ":"
 
-        sparql = self.sparql
         q = '''
         PREFIX datacite: <http://purl.org/spar/datacite/>
         PREFIX literal: <http://www.essepuntato.it/2010/06/literalreification/>
@@ -131,50 +164,37 @@ class IdExistence:
         }
         ''' % (lookup_id, lookup_id, datacite_id_scheme)
 
-        for attempt in range(retries):
-            try:
-                sparql.setQuery(q)
-                sparql.setReturnFormat(JSON)
-                result: dict = sparql.query().convert()
-                return result.get('boolean')
-            
-            except Exception as e:
-                print(f"Attempt {attempt + 1} failed with error: {e}")
-                if attempt < retries - 1:
-                    time.sleep(delay)  # wait before retrying
-                else:
-                    print("Max retries reached. Query failed.")
-                    return False
-    
-    def query_omid_in_meta(self, id:str, retries:int=3, delay:float=2.0):
+        try:
+            return self.sparql.ask(q)
+        except SPARQLError as e:
+            logger.warning("SPARQL query failed for '%s' after retries: %s", id, e)
+            return False
+
+    def query_omid_in_meta(self, id: str) -> bool:
         """
-        Queries exclusively OMIDs in OC Meta, checking if they are registered in the live triplestore.
-        :param id: the string of the ID (prefix included)
-        :return: bool
+        Check whether an OMID is registered in the OpenCitations Meta triplestore.
+
+        Uses a dedicated SPARQL query that checks for the OMID as both
+        subject and object. Returns ``False`` if the query fails after all
+        retries are exhausted.
+
+        :param id: The OMID string, including the ``omid:`` prefix.
+        :type id: str
+        :return: ``True`` if the OMID exists in Meta, ``False`` otherwise.
+        :rtype: bool
         """
         lookup_id = id.replace('omid:', '', 1)
 
-        sparql = self.sparql
-
         q = '''
         ASK WHERE {
-            { <https://w3id.org/oc/meta/%s> ?p ?o } 
-        UNION 
+            { <https://w3id.org/oc/meta/%s> ?p ?o }
+        UNION
             { ?s ?p <https://w3id.org/oc/meta/%s> }
         }
         ''' % (lookup_id, lookup_id)
 
-        for attempt in range(retries):
-            try:
-                sparql.setQuery(q)
-                sparql.setReturnFormat(JSON)
-                result: dict = sparql.query().convert()
-                return result.get('boolean', False)
-            
-            except Exception as e:
-                print(f"Attempt {attempt + 1} failed with error: {e}")
-                if attempt < retries - 1:
-                    time.sleep(delay)  # wait before retrying
-                else:
-                    print("Max retries reached. Query failed.")
-                    return False
+        try:
+            return self.sparql.ask(q)
+        except SPARQLError as e:
+            logger.warning("OMID SPARQL query failed for '%s' after retries: %s", id, e)
+            return False

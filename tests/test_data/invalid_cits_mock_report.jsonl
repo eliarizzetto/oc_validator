@@ -1,0 +1,1 @@
+{"validation_level": "csv_wellformedness", "error_type": "error", "error_label": "required_value_cits", "valid": false, "message": "A value for both 'citing_id' and 'cited_id' MUST always be specified.", "position": {"located_in": "field", "table": {"0": {"citing_id": null}}}}

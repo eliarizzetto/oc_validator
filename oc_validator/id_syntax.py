@@ -1,23 +1,34 @@
-# Copyright (c) 2023, OpenCitations <contact@opencitations.net>
+# ISC License
 #
-# Permission to use, copy, modify, and/or distribute this software for any purpose
-# with or without fee is hereby granted, provided that the above copyright notice
-# and this permission notice appear in all copies.
+# Copyright (c) 2023-2026, Elia Rizzetto, Silvio Peroni
+#
+# Permission to use, copy, modify, and/or distribute this software for any
+# purpose with or without fee is hereby granted, provided that the above
+# copyright notice and this permission notice appear in all copies.
 #
 # THE SOFTWARE IS PROVIDED "AS IS" AND THE AUTHOR DISCLAIMS ALL WARRANTIES WITH
 # REGARD TO THIS SOFTWARE INCLUDING ALL IMPLIED WARRANTIES OF MERCHANTABILITY AND
-# FITNESS. IN NO EVENT SHALL THE AUTHOR BE LIABLE FOR ANY SPECIAL, DIRECT, INDIRECT,
-# OR CONSEQUENTIAL DAMAGES OR ANY DAMAGES WHATSOEVER RESULTING FROM LOSS OF USE,
-# DATA OR PROFITS, WHETHER IN AN ACTION OF CONTRACT, NEGLIGENCE OR OTHER TORTIOUS
-# ACTION, ARISING OUT OF OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS
-# SOFTWARE.
+# FITNESS. IN NO EVENT SHALL THE AUTHOR BE LIABLE FOR ANY SPECIAL, DIRECT,
+# INDIRECT, OR CONSEQUENTIAL DAMAGES OR ANY DAMAGES WHATSOEVER RESULTING FROM
+# LOSS OF USE, DATA OR PROFITS, WHETHER IN AN ACTION OF CONTRACT, NEGLIGENCE OR
+# OTHER TORTIOUS ACTION, ARISING OUT OF OR IN CONNECTION WITH THE USE OR
+# PERFORMANCE OF THIS SOFTWARE.
 
 from oc_ds_converter.oc_idmanager import doi, isbn, issn, orcid, pmcid, pmid, ror, url, viaf, wikidata, wikipedia, openalex, crossref, jid, arxiv
 from re import match
 
 class IdSyntax:
+    """
+    Validates the external syntax of identifiers by delegating to the
+    appropriate ``oc_ds_converter`` ID manager for each recognised scheme.
+    """
 
-    def __init__(self):
+    def __init__(self) -> None:
+        """
+        Initialise ID managers for all supported identifier schemes.
+
+        :rtype: None
+        """
         self.doi_mngr = doi.DOIManager()
         self.isbn_mngr = isbn.ISBNManager()
         self.issn_mngr = issn.ISSNManager()
@@ -34,12 +45,17 @@ class IdSyntax:
         self.jid_mngr = jid.JIDManager()
         self.arxiv_mngr = arxiv.ArXivManager()
 
-    def check_id_syntax(self, id: str):
+    def check_id_syntax(self, id: str) -> bool:
         """
-        Checks the specific external syntax of each identifier schema, calling the syntax_ok() method from every
-        IdManager class.
-        :param id: the identifier (with its prefix)
-        :return: bool
+        Validate the external syntax of an identifier according to its scheme.
+
+        Dispatches to the appropriate manager's ``syntax_ok()`` method based on
+        the identifier prefix. ``temp:`` and ``local:`` identifiers always pass.
+
+        :param id: The identifier string, including its prefix (e.g. ``"doi:10.1234/abc"``).
+        :type id: str
+        :return: ``True`` if the identifier's syntax is valid, ``False`` otherwise.
+        :rtype: bool
         """
         oc_prefix = id[:(id.index(':') + 1)]
 
