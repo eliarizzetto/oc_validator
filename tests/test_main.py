@@ -640,8 +640,7 @@ class TestValidatorRealDataClosed(unittest.TestCase):
 
     def setUp(self):
         os.chdir(dirname(abspath(__file__)))
-        # Go up one level to reach project root
-        self.project_root = abspath(join(dirname(abspath(__file__)), '..'))
+        self.test_data_dir = join(dirname(abspath(__file__)), 'test_data')
         self.test_output_dir = 'test_output'
         if not exists(self.test_output_dir):
             makedirs(self.test_output_dir)
@@ -654,14 +653,14 @@ class TestValidatorRealDataClosed(unittest.TestCase):
         _cleanup_lmdb_orphans()
 
     def test_real_closed_meta(self):
-        meta_csv = join(self.project_root, 'data', 'valid', 'closed', 'meta.csv')
+        meta_csv = join(self.test_data_dir, 'closed', 'meta.csv')
         outdir = join(self.test_output_dir, 'real_meta')
         v = Validator(meta_csv, outdir, verify_id_existence=False)
         result = v.validate()
         self.assertTrue(result)
 
     def test_real_closed_cits(self):
-        cits_csv = join(self.project_root, 'data', 'valid', 'closed', 'cits.csv')
+        cits_csv = join(self.test_data_dir, 'closed', 'cits.csv')
         outdir = join(self.test_output_dir, 'real_cits')
         v = Validator(cits_csv, outdir, verify_id_existence=False)
         result = v.validate()
@@ -669,8 +668,8 @@ class TestValidatorRealDataClosed(unittest.TestCase):
 
     def test_real_closed_closure(self):
         """Test ClosureValidator with the real closed data."""
-        meta_csv = join(self.project_root, 'data', 'valid', 'closed', 'meta.csv')
-        cits_csv = join(self.project_root, 'data', 'valid', 'closed', 'cits.csv')
+        meta_csv = join(self.test_data_dir, 'closed', 'meta.csv')
+        cits_csv = join(self.test_data_dir, 'closed', 'cits.csv')
         outdir = join(self.test_output_dir, 'real_closed')
         cv = ClosureValidator(
             meta_in=meta_csv,
