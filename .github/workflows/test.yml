@@ -42,7 +42,7 @@ jobs:
 
     - name: Generate coverage badge
       if: matrix.python-version == '3.13'
-      run: uv run genbadge coverage -i coverage.xml -o coverage-badge.svg
+      run: uv run genbadge coverage -i coverage.xml -o coverage-badge.svg --local
 
     - name: Upload coverage report
       if: matrix.python-version == '3.13'
