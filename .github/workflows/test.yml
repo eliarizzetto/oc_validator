@@ -10,6 +10,8 @@ on:
 permissions:
   contents: read
   checks: write
+  pages: write
+  id-token: write
 
 jobs:
   test:
@@ -55,3 +57,32 @@ jobs:
       with:
         name: coverage-badge
         path: coverage-badge.svg
+
+  deploy:
+    needs: test
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: Download coverage report
+      uses: actions/download-artifact@v7
+      with:
+        name: coverage-report
+        path: site/
+
+    - name: Download coverage badge
+      uses: actions/download-artifact@v7
+      with:
+        name: coverage-badge
+        path: site/
+
+    - name: Setup Pages
+      uses: actions/configure-pages@v5
+
+    - name: Upload Pages artifact
+      uses: actions/upload-pages-artifact@v3
+      with:
+        path: site/
+
+    - name: Deploy to GitHub Pages
+      uses: actions/deploy-pages@v4
