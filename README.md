@@ -1,7 +1,7 @@
 # oc_validator
 
 [![Run tests](https://github.com/opencitations/oc_validator/actions/workflows/test.yml/badge.svg)](https://github.com/opencitations/oc_validator/actions/workflows/test.yml)
-[![Coverage](https://opencitations.github.io/oc_validator/coverage/coverage-badge.svg)](https://opencitations.github.io/oc_validator/coverage/)
+[![Coverage](https://opencitations.github.io/oc_validator/coverage-badge.svg)](https://opencitations.github.io/oc_validator/)
 ![Python versions](https://img.shields.io/badge/python-3.11%20%7C%203.12%20%7C%203.13-blue)
 [![License: ISC](https://img.shields.io/badge/license-ISC-green.svg)](LICENSE)
 
